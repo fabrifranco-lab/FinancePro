@@ -4,3 +4,5 @@ pandas
 numpy
 plotly
 xlsxwriter
+gspread
+oauth2client
