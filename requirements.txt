@@ -1,0 +1,6 @@
+streamlit
+streamlit-gsheets-connection
+pandas
+numpy
+plotly
+xlsxwriter
