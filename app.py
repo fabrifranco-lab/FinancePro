@@ -1,6 +1,8 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import gspread
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from google.oauth2.service_account import Credentials
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
@@ -262,14 +264,47 @@ hr { border-color: #334155 !important; }
 # ─────────────────────────────────────────────
 URL_SHEET = "https://docs.google.com/spreadsheets/d/152P8Nuk-dlb7S_EYrodxXzAsqZNBXJ5eV2mdzXKRVn4/edit#gid=33562255"
 
-@st.cache_data(ttl=60)
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+def get_gc():
+    """Retorna cliente gspread autenticado via secrets de Streamlit."""
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+def open_sheet():
+    gc  = get_gc()
+    sh  = gc.open_by_url(URL_SHEET)
+    return sh
+
+def write_ws(ws_name, df):
+    """Escribe un DataFrame completo en la hoja indicada."""
+    sh  = open_sheet()
+    ws  = sh.worksheet(ws_name)
+    ws.clear()
+    set_with_dataframe(ws, df, include_index=False, resize=True)
+
+def read_ws(sh, name):
+    ws  = sh.worksheet(name)
+    df  = get_as_dataframe(ws, evaluate_formulas=True, dtype=str)
+    df  = df.dropna(how='all').reset_index(drop=True)
+    # Eliminar columnas completamente vacías
+    df  = df.loc[:, df.columns.notna()]
+    df  = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+    return df
+
+@st.cache_data(ttl=30)
 def cargar_todo(url):
-    conn = st.connection("gsheets", type=GSheetsConnection)
+    sh = open_sheet()
     return {
-        "users":  conn.read(spreadsheet=url, worksheet="Users"),
-        "movs":   conn.read(spreadsheet=url, worksheet="Movimientos"),
-        "config": conn.read(spreadsheet=url, worksheet="Config"),
-        "inv":    conn.read(spreadsheet=url, worksheet="Inversiones"),
+        "users":  read_ws(sh, "Users"),
+        "movs":   read_ws(sh, "Movimientos"),
+        "config": read_ws(sh, "Config"),
+        "inv":    read_ws(sh, "Inversiones"),
     }
 
 data = cargar_todo(URL_SHEET)
@@ -305,7 +340,12 @@ if not st.session_state['logged_in']:
             if st.form_submit_button("INGRESAR →", use_container_width=True):
                 users = data['users'].copy()
                 users['email']    = users['email'].astype(str).str.lower().str.strip()
-                users['password'] = users['password'].astype(str).str.strip().str.replace(r'\.0$','',regex=True)
+                # Limpiar password: strip, quitar .0 de floats, quitar comillas extras
+                users['password'] = (users['password'].astype(str)
+                                     .str.strip()
+                                     .str.replace(r'\.0$','',regex=True)
+                                     .str.replace(r'^["\']+|["\']+$','',regex=True))
+                u_pass = u_pass.strip()
                 match = users[(users['email']==u_email) & (users['password']==u_pass)]
                 if not match.empty:
                     u_dict = match.iloc[0].to_dict()
@@ -373,6 +413,13 @@ else:
     df_movs_raw['monto']     = pd.to_numeric(df_movs_raw['monto'],    errors='coerce').fillna(0)
     df_movs_raw['pendiente'] = pd.to_numeric(df_movs_raw['pendiente'],errors='coerce').fillna(0)
     df_movs_raw['id']        = pd.to_numeric(df_movs_raw['id'],       errors='coerce').fillna(0).astype(int)
+    # Limpiar whatsapp_contacto: quitar .0 de float, espacios, guiones
+    if 'whatsapp_contacto' in df_movs_raw.columns:
+        df_movs_raw['whatsapp_contacto'] = (df_movs_raw['whatsapp_contacto']
+            .astype(str).str.strip()
+            .str.replace(r'\.0$','',regex=True)
+            .str.replace(r'[\s\-\+]','',regex=True)
+            .str.replace(r'^nan$','',regex=True))
 
     df_c = df_movs_raw[df_movs_raw['email']==cliente_mail].copy()
     df_c['fecha_dt'] = pd.to_datetime(df_c['fecha'], dayfirst=True, errors='coerce')
@@ -399,6 +446,30 @@ else:
         return 'Fijo' if str(v).strip().lower() in ('fijo','fixed') else 'Variable'
     df_c['naturaleza'] = df_c['categoria'].apply(_nat)
 
+    # Cargar banco de cheques del cliente (para autocompletar en gastos)
+    try:
+        _sh_ch = open_sheet()
+        df_cheques_banco = read_ws(_sh_ch, "Cheques")
+        if not df_cheques_banco.empty and 'email' in df_cheques_banco.columns:
+            df_cheques_banco = df_cheques_banco[
+                df_cheques_banco['email']==cliente_mail
+            ].copy()
+            df_cheques_banco['monto'] = pd.to_numeric(df_cheques_banco['monto'], errors='coerce').fillna(0)
+        else:
+            df_cheques_banco = pd.DataFrame()
+    except Exception:
+        df_cheques_banco = pd.DataFrame()
+
+    # Cheques disponibles (recibidos, no usados ni vencidos)
+    if not df_cheques_banco.empty and 'tipo' in df_cheques_banco.columns:
+        df_ch_disponibles = df_cheques_banco[
+            (df_cheques_banco['tipo']=='Cheque Recibido') &
+            (df_cheques_banco.get('estado', pd.Series(['Pendiente']*len(df_cheques_banco)))
+             .isin(['Pendiente','pendiente','']))
+        ].copy()
+    else:
+        df_ch_disponibles = pd.DataFrame()
+
     if isinstance(rango,(list,tuple)) and len(rango)==2:
         df_f = df_c[(df_c['fecha_dt'].dt.date>=rango[0]) & (df_c['fecha_dt'].dt.date<=rango[1])].copy()
     else:
@@ -407,8 +478,16 @@ else:
     # Medios de pago: columna D del Config, ignorar vacíos y guiones
     medios_col = 'medios' if 'medios' in df_config.columns else None
     if medios_col:
-        medios = [m for m in df_config[medios_col].dropna().unique().tolist()
-                  if str(m).strip() not in ('', 'nan', '-')]
+        # Normalizar: Title Case + deduplicar (evita cheque/Cheque/CHEQUE duplicados)
+        _raw_medios = [str(m).strip().title() for m in df_config[medios_col].dropna().unique().tolist()
+                       if str(m).strip() not in ('', 'nan', '-')]
+        # Preservar orden y deduplicar case-insensitive
+        _seen = set()
+        medios = []
+        for _m in _raw_medios:
+            if _m.lower() not in _seen:
+                _seen.add(_m.lower())
+                medios.append(_m)
     else:
         medios = ["Efectivo", "Transferencia", "A cuenta"]
 
@@ -512,13 +591,19 @@ else:
     # DASHBOARD
     # ══════════════════════════════════════════
     if menu == "📊 Dashboard":
+        # Métricas del PERÍODO seleccionado
         ing    = df_f[df_f['tipo']=='Ingreso']['monto'].sum()
         gas    = df_f[df_f['tipo']=='Gasto']['monto'].sum()
         gas_f  = df_f[(df_f['tipo']=='Gasto')&(df_f['naturaleza']=='Fijo')]['monto'].sum()
         gas_v  = df_f[(df_f['tipo']=='Gasto')&(df_f['naturaleza']=='Variable')]['monto'].sum()
         util   = ing - gas
         pend_t = df_c['pendiente'].sum()
-        caja   = util - pend_t
+
+        # CAJA REAL: acumulada desde siempre hasta hoy (independiente del filtro de período)
+        # = Total ingresos cobrados - Total gastos realizados - Pendientes de cobro
+        ing_total_acum  = df_c[df_c['tipo']=='Ingreso']['monto'].sum()
+        gas_total_acum  = df_c[df_c['tipo']=='Gasto']['monto'].sum()
+        caja = ing_total_acum - gas_total_acum - pend_t
         inv_m  = df_inv_raw[df_inv_raw['email']==cliente_mail]
         inv_total = pd.to_numeric(inv_m['monto'],errors='coerce').sum() if not inv_m.empty and 'monto' in inv_m.columns else 0
 
@@ -535,7 +620,9 @@ else:
 
         # Métricas fila 2
         m6,m7,m8,_ = st.columns(4)
-        m6.metric("🏦 CAJA REAL",  fmt_ar(caja),  delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None)
+        m6.metric("🏦 CAJA REAL",  fmt_ar(caja),
+                   delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
+                   help="Acumulado total: Ingresos cobrados - Gastos - Pendientes de cobro")
         m7.metric("⏳ PENDIENTES", fmt_ar(pend_t))
         m8.metric("📦 INVERTIDO",  fmt_ar(inv_total))
 
@@ -577,12 +664,58 @@ else:
                         "Hola {nombre}! Te recordamos que tenes un pago pendiente de {monto}. Muchas gracias!"))
                     msg_final = wa_msg_tpl.replace("{nombre}", str(d['nota'])).replace("{monto}", fmt_ar(d['pendiente']))
                     msg_enc   = urllib.parse.quote(msg_final)
-                    # Limpiar número: sacar +, espacios, guiones — wa.me solo acepta dígitos
-                    wa_num = str(d['whatsapp_contacto']).strip().replace('+','').replace(' ','').replace('-','')
-                    if wa_num and wa_num.isdigit():
+                    # Limpiar y normalizar número argentino para wa.me
+                    wa_raw = str(d['whatsapp_contacto']).strip()
+                    wa_num = wa_raw.replace('+','').replace(' ','').replace('-','').replace('.','').rstrip('0123456789.')
+                    wa_num = str(d['whatsapp_contacto']).strip().replace('+','').replace(' ','').replace('-','').split('.')[0]
+                    # Normalizar Argentina: 549 + 10 dígitos
+                    if wa_num.startswith('0'):      wa_num = '549' + wa_num[1:]
+                    elif wa_num.startswith('15'):   wa_num = '549' + wa_num[2:]
+                    elif wa_num.startswith('9'):    wa_num = '54'  + wa_num
+                    elif not wa_num.startswith('549') and len(wa_num)==10: wa_num = '549' + wa_num
+                    if wa_num and wa_num.isdigit() and len(wa_num) >= 10:
                         ca2.markdown(f'<a href="https://wa.me/{wa_num}?text={msg_enc}" target="_blank" class="whatsapp-btn">📲 Avisar</a>', unsafe_allow_html=True)
                     else:
                         ca2.warning("📵 Sin nro WA")
+
+        # ── ALERTA PAGOS DIFERIDOS / CUOTAS PENDIENTES ──
+        df_movs_raw2 = data['movs'].copy()
+        df_movs_raw2['monto'] = pd.to_numeric(df_movs_raw2['monto'], errors='coerce').fillna(0)
+        df_c2 = df_movs_raw2[df_movs_raw2['email']==cliente_mail].copy()
+        if 'fecha_vencimiento' in df_c2.columns:
+            df_c2['fv_dt'] = pd.to_datetime(df_c2['fecha_vencimiento'], dayfirst=True, errors='coerce')
+            hoy_ts = pd.Timestamp(date.today())   # mismo dtype que fv_dt → sin TypeError
+            df_pagos_venc = df_c2[
+                df_c2['fv_dt'].notna() &
+                (df_c2['tipo']=='Gasto') &
+                (df_c2['fv_dt'] >= hoy_ts)
+            ].sort_values('fv_dt')
+            df_pagos_venc2 = df_c2[
+                df_c2['fv_dt'].notna() &
+                (df_c2['tipo']=='Gasto') &
+                (df_c2['fv_dt'] < hoy_ts)
+            ]
+            def _lbl_cuota(pv):
+                c = str(pv.get('cuotas',''))
+                return f"Cuota {pv.get('cuota_num','')}/{c}" if c not in ('','nan') else 'Pago diferido'
+            if not df_pagos_venc2.empty:
+                with st.expander(f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}", expanded=True):
+                    for _,pv in df_pagos_venc2.iterrows():
+                        st.markdown(
+                            f"<div class='alerta-pendiente'>🔴 <strong>{pv['nota']}</strong> — "
+                            f"{fmt_ar(pv['monto'])} — Venció: {pv['fecha_vencimiento']} "
+                            f"({_lbl_cuota(pv)})</div>", unsafe_allow_html=True)
+            if not df_pagos_venc.empty:
+                with st.expander(f"⏰ PAGOS PRÓXIMOS A VENCER: {len(df_pagos_venc)}", expanded=True):
+                    for _,pv in df_pagos_venc.iterrows():
+                        dias_r = (pv['fv_dt'] - hoy_ts).days
+                        color = '#E74C3C' if dias_r <= 7 else '#F39C12'
+                        st.markdown(
+                            f"<div class='alerta-pendiente'>"
+                            f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} días</span> — "
+                            f"<strong>{pv['nota']}</strong> — {fmt_ar(pv['monto'])} — "
+                            f"Vence: {pv['fecha_vencimiento']} ({_lbl_cuota(pv)})"
+                            f"</div>", unsafe_allow_html=True)
 
         st.divider()
 
@@ -779,37 +912,220 @@ else:
     # ══════════════════════════════════════════
     elif menu == "💸 Movimientos":
         st.markdown(f'<div class="page-header"><div><h2>💸 Movimientos</h2><span>{sel_nombre}</span></div></div>', unsafe_allow_html=True)
-        t1,t2,t3 = st.tabs(["➕ Nuevo Registro","📋 Historial y Edición","💰 Gestión de Cobros"])
+        t1,t2,t3,t4 = st.tabs(["➕ Nuevo Registro","📋 Historial y Edición","💰 Gestión de Cobros","🏦 Cheques"])
 
         with t1:
-            tp_v = st.radio("Tipo:", ["Gasto","Ingreso"], horizontal=True)
+            # ── CONTROLES FUERA DEL FORM (reactivos en tiempo real) ──
+            medios_lower = [m.lower() for m in medios]
+            cliente_tiene_cheques = any(x in medios_lower for x in ('cheque','e-cheq','echeq'))
+
+            r1c1, r1c2 = st.columns([1,3])
+            tp_v = r1c1.radio("Tipo:", ["Gasto","Ingreso"], horizontal=True, key="tp_carga")
             cats = df_config_cliente[df_config_cliente['tipo_asociado']==tp_v]['categoria'].dropna().unique().tolist() if 'tipo_asociado' in df_config_cliente.columns else []
-            with st.form("f_carga"):
+
+            # Modalidad (solo para Gasto) — FUERA del form para ser reactivo
+            forma_pago = "Pago inmediato"
+            pago_parcial = False
+            if tp_v == "Gasto":
+                st.markdown("**💳 Modalidad de pago:**")
+                fp1, fp2, fp3 = st.columns(3)
+                forma_pago   = st.radio("", ["Pago inmediato","Pago diferido","Pago en cuotas"],
+                                        horizontal=True, key="forma_pago_sel",
+                                        label_visibility="collapsed")
+                pago_parcial = st.checkbox(
+                    "💱 Pago parcial — pago una parte ahora y el resto queda diferido",
+                    key="pago_parcial_cb"
+                )
+                st.markdown("---")
+
+            # Medio de pago — FUERA del form para detectar si es cheque antes de renderizar
+            md_v = st.selectbox("🏦 Medio de pago/cobro:", medios, key="medio_carga")
+            es_cheque = md_v.lower() in ('cheque','e-cheq','echeq') and cliente_tiene_cheques
+
+            # Tipo de cheque (solo gastos con cheque) — FUERA del form
+            tipo_cheque_g = "Cheque propio"
+            ch_sel = None
+            if tp_v == "Gasto" and es_cheque and cliente_tiene_cheques:
+                tipo_cheque_g = st.radio("Tipo de cheque:",
+                    ["Cheque propio","Cheque de tercero (de mi banco)"],
+                    horizontal=True, key="tipo_ch_g")
+                if tipo_cheque_g == "Cheque de tercero (de mi banco)":
+                    if df_ch_disponibles.empty:
+                        st.warning("No tenés cheques de terceros disponibles.")
+                    else:
+                        opciones_ch = {
+                            f"N°{r['numero']} | {r.get('banco','')} | {fmt_ar(r['monto'])} | Vence: {r.get('fecha_venc','')}": r
+                            for _,r in df_ch_disponibles.iterrows()
+                        }
+                        sel_ch_key = st.selectbox("Elegí el cheque a usar:", list(opciones_ch.keys()), key="sel_ch_terc")
+                        ch_sel = opciones_ch[sel_ch_key]
+                        st.success(f"Cheque N°{ch_sel.get('numero','')} de {ch_sel.get('librador','')} — {fmt_ar(ch_sel.get('monto',0))}")
+
+            st.markdown("---")
+
+            # ── FORM (solo datos estables) ──
+            with st.form("f_carga", clear_on_submit=True):
                 c1,c2,c3 = st.columns(3)
                 f_v   = c1.date_input("📅 Fecha")
                 cat_v = c2.selectbox("🏷️ Categoría", cats)
                 mon_v = c3.number_input("💵 Monto ($)", min_value=0.0, step=1000.0)
-                md_v  = st.selectbox("🏦 Medio:", medios)
                 nt_v  = st.text_input("📝 Nota / Nombre")
-                pn_v, wa_v = 0.0, ""
-                if tp_v == "Ingreso":
-                    cp1,cp2 = st.columns(2)
-                    pn_v = cp1.number_input("⏳ Pendiente ($)", min_value=0.0, step=100.0)
-                    wa_v = cp2.text_input("📱 WhatsApp (549...)")
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.form_submit_button("💾 GUARDAR REGISTRO", use_container_width=True):
-                    dup = df_c[(df_c['fecha']==f_v.strftime('%d/%m/%Y'))&(df_c['categoria']==cat_v)&(df_c['monto']==mon_v)&(df_c['nota']==nt_v)]
-                    if not dup.empty:
-                        st.warning("⚠️ Ya existe un registro similar para esa fecha/categoría/monto/nota. Verificá antes de guardar.")
-                    else:
-                        nueva = pd.DataFrame([{"id":int(time.time()*100),"email":cliente_mail,
-                            "fecha":f_v.strftime('%d/%m/%Y'),"tipo":tp_v,"categoria":cat_v,
-                            "monto":mon_v,"medio":md_v,"pendiente":pn_v,"nota":nt_v,
-                            "whatsapp_contacto":wa_v,"usuario_log":user['nombre'],
-                            "timestamp":datetime.now().strftime('%Y-%m-%d %H:%M')}])
-                        st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Movimientos",data=pd.concat([df_movs_raw,nueva],ignore_index=True))
-                        st.cache_data.clear(); st.success("✅ Guardado"); st.rerun()
 
+                # ── Campos según tipo ──
+                pn_v = wa_v = 0.0
+                fecha_venc_v = ""
+                cuotas_v = cuota_num_v = 1
+                ch_num_v = ch_banco_v = ch_librador_v = ch_venc_v = ""
+                monto_parcial_v = 0.0
+                fecha_parcial_v = ""
+
+                if tp_v == "Ingreso":
+                    st.markdown("---")
+                    cp1,cp2 = st.columns(2)
+                    pn_v = cp1.number_input("⏳ Pendiente de cobro ($)", min_value=0.0, step=100.0)
+                    wa_v = cp2.text_input("📱 WhatsApp del deudor (549...)")
+                    if es_cheque and cliente_tiene_cheques:
+                        st.markdown("**🏦 Datos del cheque recibido:**")
+                        ck1,ck2,ck3 = st.columns(3)
+                        ch_num_v      = ck1.text_input("N° de cheque")
+                        ch_banco_v    = ck2.text_input("Banco emisor")
+                        ch_librador_v = ck3.text_input("Librador")
+                        ck4,_ = st.columns(2)
+                        ch_venc_date  = ck4.date_input("📅 Vencimiento del cheque")
+                        ch_venc_v     = ch_venc_date.strftime('%d/%m/%Y')
+
+                if tp_v == "Gasto":
+                    # Pago diferido → fecha de vencimiento
+                    if forma_pago == "Pago diferido":
+                        fd1,fd2 = st.columns(2)
+                        fv_date      = fd1.date_input("📅 Fecha de vencimiento del pago")
+                        fecha_venc_v = fv_date.strftime('%d/%m/%Y')
+                        fd2.warning("Recibirás una alerta cuando se acerque esta fecha.")
+
+                    # Pago en cuotas → cuántas y primer vencimiento
+                    elif forma_pago == "Pago en cuotas":
+                        cq1,cq2,cq3 = st.columns(3)
+                        cuotas_v     = int(cq1.number_input("N° total de cuotas", min_value=2, max_value=60, value=3, step=1))
+                        cuota_num_v  = int(cq2.number_input("N° cuota a registrar", min_value=1, max_value=cuotas_v, value=1, step=1))
+                        fv_c_date    = cq3.date_input("📅 Vencimiento de esta cuota")
+                        fecha_venc_v = fv_c_date.strftime('%d/%m/%Y')
+                        monto_cuota  = mon_v / cuotas_v if cuotas_v > 0 else mon_v
+                        st.info(f"Valor por cuota estimado: {fmt_ar(monto_cuota)} — Cuota {cuota_num_v}/{cuotas_v}")
+
+                    # Pago parcial → monto ahora + resto diferido
+                    if pago_parcial:
+                        st.markdown("**💱 Detalle del pago parcial:**")
+                        pp1,pp2,pp3 = st.columns(3)
+                        monto_parcial_v = pp1.number_input("Monto que pagás ahora ($)", min_value=0.0, max_value=float(mon_v) if mon_v>0 else 999999999.0, step=1000.0)
+                        fv_p_date       = pp2.date_input("📅 Vencimiento del resto")
+                        fecha_parcial_v = fv_p_date.strftime('%d/%m/%Y')
+                        resto = mon_v - monto_parcial_v
+                        pp3.metric("Resto diferido", fmt_ar(resto))
+
+                    # Datos de cheque propio
+                    if es_cheque and cliente_tiene_cheques and tipo_cheque_g == "Cheque propio":
+                        st.markdown("**🏦 Datos del cheque:**")
+                        ck1,ck2,ck3 = st.columns(3)
+                        ch_num_v      = ck1.text_input("N° de cheque")
+                        ch_banco_v    = ck2.text_input("Mi banco")
+                        ch_venc_date2 = ck3.date_input("📅 Fecha del cheque")
+                        ch_venc_v     = ch_venc_date2.strftime('%d/%m/%Y')
+                        ch_librador_v = user['nombre']
+                    elif es_cheque and ch_sel is not None:
+                        # Cheque de tercero ya seleccionado arriba — traer datos
+                        ch_num_v      = str(ch_sel.get('numero',''))
+                        ch_banco_v    = str(ch_sel.get('banco',''))
+                        ch_librador_v = str(ch_sel.get('librador',''))
+                        ch_venc_v     = str(ch_sel.get('fecha_venc',''))
+
+                if st.form_submit_button("💾 GUARDAR REGISTRO", use_container_width=True):
+                    dup = df_c[
+                        (df_c['fecha']==f_v.strftime('%d/%m/%Y')) &
+                        (df_c['categoria']==cat_v) &
+                        (df_c['monto']==mon_v) &
+                        (df_c['nota']==nt_v)
+                    ]
+                    if not dup.empty:
+                        st.warning("⚠️ Ya existe un registro similar. Verificá antes de guardar.")
+                    else:
+                        nota_extra = nt_v
+                        if es_cheque and ch_num_v:
+                            nota_extra = f"{nt_v} [Ch N°{ch_num_v} {ch_banco_v} vto:{ch_venc_v}]".strip()
+                        if tp_v=="Gasto" and cuotas_v > 1:
+                            nota_extra = f"{nota_extra} [Cuota {cuota_num_v}/{cuotas_v}]"
+                        if pago_parcial and monto_parcial_v > 0:
+                            nota_extra = f"{nota_extra} [Parcial: {fmt_ar(monto_parcial_v)} ahora]"
+
+                        nueva = pd.DataFrame([{
+                            "id": int(time.time()*100), "email": cliente_mail,
+                            "fecha": f_v.strftime('%d/%m/%Y'), "tipo": tp_v,
+                            "categoria": cat_v, "monto": mon_v, "medio": md_v,
+                            "pendiente": pn_v, "nota": nota_extra,
+                            "whatsapp_contacto": wa_v,
+                            "fecha_vencimiento": fecha_venc_v,
+                            "cuotas": cuotas_v if cuotas_v > 1 else "",
+                            "cuota_num": cuota_num_v if cuotas_v > 1 else "",
+                            "cheque_numero": ch_num_v,
+                            "cheque_banco": ch_banco_v,
+                            "cheque_venc": ch_venc_v,
+                            "usuario_log": user['nombre'],
+                            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M')
+                        }])
+                        df_concat = pd.concat([df_movs_raw, nueva], ignore_index=True)
+                        write_ws("Movimientos", df_concat)
+
+                        # Pago parcial → generar segundo registro diferido por el resto
+                        if pago_parcial and monto_parcial_v > 0 and tp_v == "Gasto":
+                            resto = mon_v - monto_parcial_v
+                            if resto > 0:
+                                nota_resto = f"{nt_v} [Resto diferido de pago parcial]"
+                                nueva_resto = pd.DataFrame([{
+                                    "id": int(time.time()*100)+1, "email": cliente_mail,
+                                    "fecha": f_v.strftime('%d/%m/%Y'), "tipo": "Gasto",
+                                    "categoria": cat_v, "monto": resto, "medio": md_v,
+                                    "pendiente": 0, "nota": nota_resto,
+                                    "whatsapp_contacto": "",
+                                    "fecha_vencimiento": fecha_parcial_v,
+                                    "cuotas": "", "cuota_num": "",
+                                    "cheque_numero": "", "cheque_banco": "", "cheque_venc": "",
+                                    "usuario_log": user['nombre'],
+                                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M'),
+                                    "ref_parcial": str(int(time.time()*100))
+                                }])
+                                df_concat2 = pd.concat([df_concat, nueva_resto], ignore_index=True)
+                                write_ws("Movimientos", df_concat2)
+
+                        # Ingreso con cheque → guardar en banco de cheques
+                        if tp_v == "Ingreso" and es_cheque and ch_num_v:
+                            try:
+                                df_ch_raw2 = read_ws(open_sheet(), "Cheques")
+                            except Exception:
+                                df_ch_raw2 = pd.DataFrame()
+                            nuevo_ch = pd.DataFrame([{
+                                "id": int(time.time()*100)+2, "email": cliente_mail,
+                                "tipo": "Cheque Recibido", "numero": ch_num_v,
+                                "banco": ch_banco_v, "librador": ch_librador_v,
+                                "monto": mon_v,
+                                "fecha_venc": ch_venc_v if ch_venc_v else f_v.strftime('%d/%m/%Y'),
+                                "nota": nt_v, "estado": "Pendiente",
+                                "usuario_log": user['nombre'],
+                                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M')
+                            }])
+                            write_ws("Cheques", pd.concat([df_ch_raw2, nuevo_ch], ignore_index=True))
+
+                        # Gasto con cheque de tercero → marcar como usado
+                        if tp_v == "Gasto" and es_cheque and ch_sel is not None:
+                            try:
+                                df_ch_full2 = read_ws(open_sheet(), "Cheques")
+                                mask = (df_ch_full2['numero'].astype(str)==str(ch_num_v)) & (df_ch_full2['email']==cliente_mail)
+                                df_ch_full2.loc[mask, 'estado'] = 'Usado en pago'
+                                write_ws("Cheques", df_ch_full2)
+                            except Exception:
+                                pass
+
+                        st.cache_data.clear()
+                        st.success("✅ Registro guardado correctamente")
+                        st.rerun()
         with t2:
             # ── Filtros de historial ──
             fh1, fh2, fh3 = st.columns(3)
@@ -861,11 +1177,11 @@ else:
                         for col,val in zip(upd_cols, upd_vals):
                             if col in df_movs_raw.columns:
                                 df_movs_raw.loc[df_movs_raw['id']==id_t, col] = val
-                        st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Movimientos",data=df_movs_raw)
+                        write_ws("Movimientos", df_movs_raw)
                         st.cache_data.clear(); st.success("✅ Actualizado"); st.rerun()
                     if bd.form_submit_button("🗑️ ELIMINAR",use_container_width=True):
                         df_movs_raw = df_movs_raw[df_movs_raw['id']!=id_t]
-                        st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Movimientos",data=df_movs_raw)
+                        write_ws("Movimientos", df_movs_raw)
                         st.cache_data.clear(); st.rerun()
 
         with t3:
@@ -885,8 +1201,122 @@ else:
                                 "fecha":date.today().strftime('%d/%m/%Y'),"tipo":"Ingreso",
                                 "categoria":"Cobro Deuda","monto":m_c,"medio":md_c,
                                 "pendiente":0,"nota":f"Cobro a: {r['nota']}","usuario_log":user['nombre']}])
-                            st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Movimientos",data=pd.concat([df_movs_raw,pago],ignore_index=True))
+                            write_ws("Movimientos", pd.concat([df_movs_raw,pago],ignore_index=True))
                             st.cache_data.clear(); st.rerun()
+
+        # ═════════════════ TAB CHEQUES ═════════════════
+        with t4:
+            st.markdown("#### 🏦 Banco de Cheques")
+            st.info("Los cheques se registran automáticamente al cargar un movimiento con medio **Cheque** o **E-Cheq**.")
+
+            # ── Cargar cheques existentes ──
+            try:
+                df_ch = read_ws(open_sheet(), "Cheques")
+                df_ch = df_ch[df_ch['email']==cliente_mail].copy() if not df_ch.empty and 'email' in df_ch.columns else pd.DataFrame()
+            except Exception:
+                df_ch = pd.DataFrame()
+
+            if df_ch.empty:
+                st.info("Sin cheques registrados aún.")
+            else:
+                df_ch['monto']      = pd.to_numeric(df_ch['monto'], errors='coerce').fillna(0)
+                df_ch['fecha_venc_dt'] = pd.to_datetime(df_ch['fecha_venc'], dayfirst=True, errors='coerce')
+                hoy = date.today()
+
+                # ── ALERTAS: cheques próximos a vencer ──
+                df_ch_pend = df_ch[df_ch['estado'] != 'Depositado'] if 'estado' in df_ch.columns else df_ch
+                hoy_ts2 = pd.Timestamp(hoy)
+                limite_ts = hoy_ts2 + pd.Timedelta(days=int(dias_alerta))
+                df_prox = df_ch_pend[
+                    df_ch_pend['fecha_venc_dt'].notna() &
+                    (df_ch_pend['fecha_venc_dt'] >= hoy_ts2) &
+                    (df_ch_pend['fecha_venc_dt'] <= limite_ts)
+                ] if not df_ch_pend.empty else pd.DataFrame()
+
+                df_venc = df_ch_pend[
+                    df_ch_pend['fecha_venc_dt'].notna() &
+                    (df_ch_pend['fecha_venc_dt'] < hoy_ts2)
+                ] if not df_ch_pend.empty else pd.DataFrame()
+
+                if not df_venc.empty:
+                    st.error(f"🚨 {len(df_venc)} cheque(s) VENCIDO(S) sin depositar!")
+                    for _,r in df_venc.iterrows():
+                        st.markdown(f"**N° {r['numero']}** — {r['banco']} — {fmt_ar(r['monto'])} — Venció: {r['fecha_venc']}")
+
+                if not df_prox.empty:
+                    dias_str = f"{dias_alerta} días"
+                    st.warning(f"⚠️ {len(df_prox)} cheque(s) próximo(s) a vencer en {dias_str}!")
+                    for _,r in df_prox.iterrows():
+                        dias_rest = (r['fecha_venc_dt'] - hoy_ts2).days
+                        st.markdown(
+                            f"<div style='background:#FEF9E7; border-left:4px solid #F39C12; "
+                            f"border-radius:8px; padding:10px 14px; margin:4px 0;'>"
+                            f"🔔 <strong>N° {r['numero']}</strong> — {r['banco']} — "
+                            f"<strong>{fmt_ar(r['monto'])}</strong> — "
+                            f"Vence: {r['fecha_venc']} (<strong style='color:#E74C3C;'>faltan {dias_rest} días</strong>)"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
+
+                st.divider()
+
+                # ── Tabla de cheques ──
+                col_ch1, col_ch2 = st.columns(2)
+                with col_ch1:
+                    st.markdown("##### 📥 Cheques Recibidos (para depositar)")
+                    df_rec = df_ch[df_ch['tipo']=='Cheque Recibido'] if 'tipo' in df_ch.columns else df_ch
+                    if df_rec.empty:
+                        st.info("Sin cheques recibidos")
+                    else:
+                        for _,r in df_rec.sort_values('fecha_venc_dt').iterrows():
+                            estado_color = '#27AE60' if str(r.get('estado','')) == 'Depositado' else '#E74C3C'
+                            st.markdown(
+                                f"<div style='background:white; border-radius:10px; padding:10px 14px; "
+                                f"margin:4px 0; border-left:4px solid {estado_color}; "
+                                f"box-shadow:0 1px 4px rgba(0,0,0,0.08);'>"
+                                f"<strong>N° {r['numero']}</strong> — {r.get('banco','')} — {fmt_ar(r['monto'])}<br>"
+                                f"<small style='color:#7F8C8D;'>Vence: {r['fecha_venc']} | "
+                                f"Librador: {r.get('librador','')} | Estado: {r.get('estado','Pendiente')}</small>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                            # Botón marcar como depositado
+                            if str(r.get('estado','')) != 'Depositado':
+                                if st.button(f"✅ Marcar depositado N°{r['numero']}", key=f"dep_{r['id']}"):
+                                    try:
+                                        df_ch_full = read_ws(open_sheet(), "Cheques")
+                                        df_ch_full.loc[df_ch_full['id'].astype(str)==str(r['id']), 'estado'] = 'Depositado'
+                                        write_ws("Cheques", df_ch_full)
+                                        st.cache_data.clear(); st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Error: {e}")
+
+                with col_ch2:
+                    st.markdown("##### 📤 Cheques Emitidos (pagos realizados)")
+                    df_emit = df_ch[df_ch['tipo']=='Cheque Emitido'] if 'tipo' in df_ch.columns else pd.DataFrame()
+                    if df_emit.empty:
+                        st.info("Sin cheques emitidos")
+                    else:
+                        for _,r in df_emit.sort_values('fecha_venc_dt').iterrows():
+                            st.markdown(
+                                f"<div style='background:white; border-radius:10px; padding:10px 14px; "
+                                f"margin:4px 0; border-left:4px solid #3498DB; "
+                                f"box-shadow:0 1px 4px rgba(0,0,0,0.08);'>"
+                                f"<strong>N° {r['numero']}</strong> — {r.get('banco','')} — {fmt_ar(r['monto'])}<br>"
+                                f"<small style='color:#7F8C8D;'>Vence: {r['fecha_venc']} | "
+                                f"A favor de: {r.get('librador','')} | Estado: {r.get('estado','Pendiente')}</small>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+
+                # Métricas resumen
+                st.divider()
+                mc1,mc2,mc3,mc4 = st.columns(4)
+                df_rec_pend = df_ch[(df_ch.get('tipo','')=='Cheque Recibido') & (df_ch.get('estado','Pendiente')!='Depositado')] if not df_ch.empty else pd.DataFrame()
+                mc1.metric("📥 Cheques recibidos", str(len(df_ch[df_ch.get('tipo','')=='Cheque Recibido'])) if 'tipo' in df_ch.columns else "0")
+                mc2.metric("💰 Total a depositar", fmt_ar(df_rec_pend['monto'].sum()) if not df_rec_pend.empty else "$ 0")
+                mc3.metric("📤 Cheques emitidos",  str(len(df_ch[df_ch.get('tipo','')=='Cheque Emitido'])) if 'tipo' in df_ch.columns else "0")
+                mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
 
     # ══════════════════════════════════════════
     # INVERSIONES
@@ -935,7 +1365,7 @@ else:
                         ni = pd.DataFrame([{"email":cliente_mail,"fecha":date.today().strftime('%d/%m/%Y'),
                             "instrumento":ins_r,"monto":mon_r,"rentabilidad":rent_r,
                             "mensaje":nota_r,"tipo_registro":"registro_cliente"}])
-                        st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Inversiones",data=pd.concat([df_inv_raw,ni],ignore_index=True))
+                        write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
                         st.success("✅ Inversión registrada"); st.cache_data.clear(); st.rerun()
 
             if regs.empty:
@@ -968,7 +1398,7 @@ else:
                         ni = pd.DataFrame([{"email":cliente_mail,"fecha":date.today().strftime('%d/%m/%Y'),
                             "instrumento":ins_a,"monto":mon_a,"rentabilidad":0,
                             "mensaje":msg_a,"tipo_registro":"recomendacion_admin"}])
-                        st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Inversiones",data=pd.concat([df_inv_raw,ni],ignore_index=True))
+                        write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
                         st.success("✅ Recomendación enviada"); st.cache_data.clear()
             else:
                 if recs.empty:
@@ -1018,7 +1448,7 @@ else:
                         else:
                             df_u = data['users'].copy()
                             df_u.loc[df_u['email']==user['email'],'password'] = n1
-                            st.connection("gsheets",type=GSheetsConnection).update(spreadsheet=URL_SHEET,worksheet="Users",data=df_u)
+                            write_ws("Users", df_u)
                             st.success("Contrasena actualizada. Reingrsa.")
                             st.session_state.clear(); st.cache_data.clear(); st.rerun()
 
@@ -1055,8 +1485,7 @@ else:
                     if 'wa_template' not in df_u.columns:
                         df_u['wa_template'] = ''
                     df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = nuevo_tpl
-                    st.connection("gsheets",type=GSheetsConnection).update(
-                        spreadsheet=URL_SHEET, worksheet="Users", data=df_u)
+                    write_ws("Users", df_u)
                     st.cache_data.clear()
                     st.success("Mensaje guardado de forma permanente en tu perfil!")
                 if st.button("Restaurar mensaje por defecto", use_container_width=True):
@@ -1066,8 +1495,7 @@ else:
                     if 'wa_template' not in df_u.columns:
                         df_u['wa_template'] = ''
                     df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = tpl_default
-                    st.connection("gsheets",type=GSheetsConnection).update(
-                        spreadsheet=URL_SHEET, worksheet="Users", data=df_u)
+                    write_ws("Users", df_u)
                     st.cache_data.clear()
                     st.rerun()
             with col_wa2:
@@ -1083,4 +1511,4 @@ else:
                     "text-align:right; max-width:280px;'>Enviado</div>"
                 )
                 st.markdown(bubble, unsafe_allow_html=True)
-            st.info("El mensaje queda guardado en tu perfil de forma permanente. Cada cliente puede tener su propio mensaje.")
+            st.info("El mensaje queda guardado en tu perfil de forma permanente.")
