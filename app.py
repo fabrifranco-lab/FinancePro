@@ -231,6 +231,14 @@ div[data-testid="stForm"] div[data-baseweb="input"] { background-color: #0F172A 
 div[data-testid="stForm"] div[data-baseweb="input"] input { color: #F1F5F9 !important; }
 .stButton button { background: linear-gradient(135deg, #1D4ED8, #2563EB) !important; }
 .stRadio label { color: #E2E8F0 !important; }
+/* textarea en perfil WA modo oscuro */
+textarea { background-color: #1E293B !important; color: #F1F5F9 !important; border-color: #475569 !important; }
+[data-testid="stNotificationContentInfo"] { background: #1E3A5F !important; color: #93C5FD !important; }
+[data-testid="stNotificationContentWarning"] { background: #3D2A00 !important; color: #FCD34D !important; }
+[data-testid="stNotificationContentSuccess"] { background: #052E16 !important; color: #86EFAC !important; }
+[data-testid="stCaptionContainer"] { color: #64748B !important; }
+[data-baseweb="popover"] [role="option"] { background: #1E293B !important; color: #E2E8F0 !important; }
+[data-baseweb="popover"] [role="option"]:hover { background: #334155 !important; }
 /* Todos los textos generales claros en modo oscuro */
 [data-testid="stMarkdownContainer"] * { color: #E2E8F0 !important; }
 [data-testid="stMarkdownContainer"] strong,
@@ -269,35 +277,42 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+@st.cache_resource(show_spinner=False)
 def get_gc():
-    """Retorna cliente gspread autenticado via secrets de Streamlit."""
+    """Conexión Google autenticada — cacheada como resource (no se recrea en cada rerun)."""
     creds_dict = dict(st.secrets["connections"]["gsheets"])
     creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
+@st.cache_resource(show_spinner=False)
+def get_sheet():
+    """Objeto Spreadsheet cacheado — una sola apertura por sesión del servidor."""
+    return get_gc().open_by_url(URL_SHEET)
+
 def open_sheet():
-    gc  = get_gc()
-    sh  = gc.open_by_url(URL_SHEET)
-    return sh
+    return get_sheet()
 
 def write_ws(ws_name, df):
-    """Escribe un DataFrame completo en la hoja indicada."""
-    sh  = open_sheet()
-    ws  = sh.worksheet(ws_name)
+    """Escribe DataFrame en la hoja y actualiza el cache interno de session_state."""
+    sh = open_sheet()
+    ws = sh.worksheet(ws_name)
     ws.clear()
     set_with_dataframe(ws, df, include_index=False, resize=True)
+    # Actualizar cache local para que el próximo rerun no espere ttl
+    if 'data_cache' not in st.session_state:
+        st.session_state['data_cache'] = {}
+    st.session_state['data_cache'][ws_name] = df.copy()
 
 def read_ws(sh, name):
     ws  = sh.worksheet(name)
     df  = get_as_dataframe(ws, evaluate_formulas=True, dtype=str)
     df  = df.dropna(how='all').reset_index(drop=True)
-    # Eliminar columnas completamente vacías
     df  = df.loc[:, df.columns.notna()]
     df  = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
     return df
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=120, show_spinner="Cargando datos...")
 def cargar_todo(url):
     sh = open_sheet()
     return {
@@ -307,7 +322,18 @@ def cargar_todo(url):
         "inv":    read_ws(sh, "Inversiones"),
     }
 
-data = cargar_todo(URL_SHEET)
+def get_data():
+    """Retorna datos: usa cache local (session_state) si existe, si no el cache de 120s."""
+    base = cargar_todo(URL_SHEET)
+    cache = st.session_state.get('data_cache', {})
+    return {
+        "users":  cache.get("Users",        base["users"]),
+        "movs":   cache.get("Movimientos",  base["movs"]),
+        "config": cache.get("Config",       base["config"]),
+        "inv":    cache.get("Inversiones",  base["inv"]),
+    }
+
+data = get_data()
 
 if 'logged_in' not in st.session_state:
     st.session_state.update({'logged_in': False, 'user': None})
@@ -403,7 +429,7 @@ else:
             st.session_state['dark_mode'] = not dark
             st.rerun()
         if st.button("🚪 Cerrar Sesión", use_container_width=True):
-            st.session_state.clear(); st.cache_data.clear(); st.rerun()
+            st.session_state.clear(); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
     # ── INYECTAR MODO OSCURO si está activo ──
     if st.session_state.get('dark_mode', False):
@@ -683,6 +709,8 @@ else:
         df_movs_raw2['monto'] = pd.to_numeric(df_movs_raw2['monto'], errors='coerce').fillna(0)
         df_c2 = df_movs_raw2[df_movs_raw2['email']==cliente_mail].copy()
         if 'fecha_vencimiento' in df_c2.columns:
+            # Excluir los ya marcados como pagados
+            df_c2 = df_c2[df_c2['fecha_vencimiento'].astype(str).str.upper() != 'PAGADO']
             df_c2['fv_dt'] = pd.to_datetime(df_c2['fecha_vencimiento'], dayfirst=True, errors='coerce')
             hoy_ts = pd.Timestamp(date.today())   # mismo dtype que fv_dt → sin TypeError
             df_pagos_venc = df_c2[
@@ -698,24 +726,73 @@ else:
             def _lbl_cuota(pv):
                 c = str(pv.get('cuotas',''))
                 return f"Cuota {pv.get('cuota_num','')}/{c}" if c not in ('','nan') else 'Pago diferido'
+
+            def _btn_registrar_pago(pv, key_sfx):
+                """Mini formulario inline para registrar el pago de un diferido/cuota."""
+                _nota_pv = str(pv.get('nota','Sin descripción') or 'Sin descripción')[:40]
+                with st.expander(f"✅ Registrar pago de: {_nota_pv}", expanded=False):
+                    bp1, bp2, bp3 = st.columns(3)
+                    med_pago = bp1.selectbox("Medio:", medios, key=f"med_bp_{key_sfx}")
+                    fec_pago = bp2.date_input("Fecha:", value=date.today(), key=f"fec_bp_{key_sfx}")
+                    mon_pago = bp3.number_input("Monto ($):", value=float(pv['monto']),
+                                                min_value=0.0, step=1000.0, key=f"mon_bp_{key_sfx}")
+                    if st.button(f"💾 Confirmar pago", key=f"btn_bp_{key_sfx}", use_container_width=True):
+                        # 1. Marcar el movimiento original con fecha_vencimiento vacía (pagado)
+                        _df_m = data['movs'].copy()
+                        _df_m['monto'] = pd.to_numeric(_df_m['monto'], errors='coerce').fillna(0)
+                        _id = str(pv.get('id',''))
+                        if _id and 'id' in _df_m.columns:
+                            _df_m.loc[_df_m['id'].astype(str)==_id, 'fecha_vencimiento'] = 'PAGADO'
+                        # 2. Registrar nuevo movimiento de pago confirmado
+                        _nuevo = pd.DataFrame([{
+                            "id": int(time.time()*100),
+                            "email": cliente_mail,
+                            "fecha": fec_pago.strftime('%d/%m/%Y'),
+                            "tipo": "Gasto",
+                            "categoria": str(pv.get('categoria','') or 'Otro'),
+                            "monto": mon_pago,
+                            "medio": med_pago,
+                            "pendiente": 0,
+                            "nota": f"PAGO: {str(pv.get('nota','') or '')[:60]}",
+                            "whatsapp_contacto": "",
+                            "fecha_vencimiento": "",
+                            "cuotas": "", "cuota_num": "",
+                            "cheque_numero": "", "cheque_banco": "", "cheque_venc": "",
+                            "usuario_log": user['nombre'],
+                            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M')
+                        }])
+                        write_ws("Movimientos", pd.concat([_df_m, _nuevo], ignore_index=True))
+                        st.success("✅ Pago registrado")
+                        st.cache_data.clear(); st.session_state.pop('data_cache', None)
+                        st.rerun()
+
             if not df_pagos_venc2.empty:
                 with st.expander(f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}", expanded=True):
-                    for _,pv in df_pagos_venc2.iterrows():
-                        st.markdown(
-                            f"<div class='alerta-pendiente'>🔴 <strong>{pv['nota']}</strong> — "
-                            f"{fmt_ar(pv['monto'])} — Venció: {pv['fecha_vencimiento']} "
+                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc2.iterrows()):
+                        pv_col1, pv_col2 = st.columns([3,1])
+                        _nota_show = str(pv.get('nota','') or 'Sin descripción')
+                        pv_col1.markdown(
+                            f"<div class='alerta-pendiente'>🔴 <strong>{_nota_show}</strong> — "
+                            f"{fmt_ar(pv['monto'])} — Venció: {pv.get('fecha_vencimiento','')} "
                             f"({_lbl_cuota(pv)})</div>", unsafe_allow_html=True)
+                        with pv_col2:
+                            _btn_registrar_pago(pv, f"v_{_i_pv}")
+
             if not df_pagos_venc.empty:
                 with st.expander(f"⏰ PAGOS PRÓXIMOS A VENCER: {len(df_pagos_venc)}", expanded=True):
-                    for _,pv in df_pagos_venc.iterrows():
-                        dias_r = (pv['fv_dt'] - hoy_ts).days
-                        color = '#E74C3C' if dias_r <= 7 else '#F39C12'
-                        st.markdown(
+                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc.iterrows()):
+                        dias_r = int((pv['fv_dt'] - hoy_ts).days)
+                        color  = '#E74C3C' if dias_r <= 7 else '#F39C12'
+                        pv_col1, pv_col2 = st.columns([3,1])
+                        _nota_show = str(pv.get('nota','') or 'Sin descripción')
+                        pv_col1.markdown(
                             f"<div class='alerta-pendiente'>"
                             f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} días</span> — "
-                            f"<strong>{pv['nota']}</strong> — {fmt_ar(pv['monto'])} — "
-                            f"Vence: {pv['fecha_vencimiento']} ({_lbl_cuota(pv)})"
+                            f"<strong>{_nota_show}</strong> — {fmt_ar(pv['monto'])} — "
+                            f"Vence: {pv.get('fecha_vencimiento','')} ({_lbl_cuota(pv)})"
                             f"</div>", unsafe_allow_html=True)
+                        with pv_col2:
+                            _btn_registrar_pago(pv, f"p_{_i_pv}")
 
         st.divider()
 
@@ -1013,14 +1090,20 @@ else:
                         st.info(f"Valor por cuota estimado: {fmt_ar(monto_cuota)} — Cuota {cuota_num_v}/{cuotas_v}")
 
                     # Pago parcial → monto ahora + resto diferido
-                    if pago_parcial:
+                    if st.session_state.get('pago_parcial_cb', False):
                         st.markdown("**💱 Detalle del pago parcial:**")
                         pp1,pp2,pp3 = st.columns(3)
-                        monto_parcial_v = pp1.number_input("Monto que pagás ahora ($)", min_value=0.0, max_value=float(mon_v) if mon_v>0 else 999999999.0, step=1000.0)
-                        fv_p_date       = pp2.date_input("📅 Vencimiento del resto")
+                        monto_parcial_v = pp1.number_input("Monto que pagás ahora ($)",
+                            min_value=0.0,
+                            max_value=float(mon_v) if mon_v > 0 else 999999999.0,
+                            step=1000.0,
+                            key="monto_parcial_field")
+                        fv_p_date       = pp2.date_input("📅 Vencimiento del resto diferido",
+                            value=date.today(),
+                            key="fecha_parcial_field")
                         fecha_parcial_v = fv_p_date.strftime('%d/%m/%Y')
                         resto = mon_v - monto_parcial_v
-                        pp3.metric("Resto diferido", fmt_ar(resto))
+                        pp3.metric("Resto diferido", fmt_ar(max(0, resto)))
 
                     # Datos de cheque propio
                     if es_cheque and cliente_tiene_cheques and tipo_cheque_g == "Cheque propio":
@@ -1123,7 +1206,7 @@ else:
                             except Exception:
                                 pass
 
-                        st.cache_data.clear()
+                        st.cache_data.clear(); st.session_state.pop('data_cache', None)
                         st.success("✅ Registro guardado correctamente")
                         st.rerun()
         with t2:
@@ -1178,11 +1261,11 @@ else:
                             if col in df_movs_raw.columns:
                                 df_movs_raw.loc[df_movs_raw['id']==id_t, col] = val
                         write_ws("Movimientos", df_movs_raw)
-                        st.cache_data.clear(); st.success("✅ Actualizado"); st.rerun()
+                        st.cache_data.clear(); st.session_state.pop('data_cache', None); st.success("✅ Actualizado"); st.rerun()
                     if bd.form_submit_button("🗑️ ELIMINAR",use_container_width=True):
                         df_movs_raw = df_movs_raw[df_movs_raw['id']!=id_t]
                         write_ws("Movimientos", df_movs_raw)
-                        st.cache_data.clear(); st.rerun()
+                        st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
         with t3:
             deudas_v = df_c[df_c['pendiente']>0]
@@ -1202,7 +1285,7 @@ else:
                                 "categoria":"Cobro Deuda","monto":m_c,"medio":md_c,
                                 "pendiente":0,"nota":f"Cobro a: {r['nota']}","usuario_log":user['nombre']}])
                             write_ws("Movimientos", pd.concat([df_movs_raw,pago],ignore_index=True))
-                            st.cache_data.clear(); st.rerun()
+                            st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
         # ═════════════════ TAB CHEQUES ═════════════════
         with t4:
@@ -1287,7 +1370,7 @@ else:
                                         df_ch_full = read_ws(open_sheet(), "Cheques")
                                         df_ch_full.loc[df_ch_full['id'].astype(str)==str(r['id']), 'estado'] = 'Depositado'
                                         write_ws("Cheques", df_ch_full)
-                                        st.cache_data.clear(); st.rerun()
+                                        st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
                                     except Exception as e:
                                         st.error(f"Error: {e}")
 
@@ -1343,7 +1426,8 @@ else:
             mi1,mi2,mi3,_ = st.columns(4)
             mi1.metric("📦 TOTAL INVERTIDO",fmt_ar(tot_inv))
             if not regs.empty and 'rentabilidad' in regs.columns:
-                mi2.metric("📈 RENT. PROM.",f"{regs['rentabilidad'].mean():.1f}%")
+                _rent_vals = pd.to_numeric(regs['rentabilidad'], errors='coerce').dropna()
+                mi2.metric("📈 RENT. PROM.", f"{_rent_vals.mean():.1f}%" if not _rent_vals.empty else "N/A")
             mi3.metric("🔢 POSICIONES",str(len(regs)))
 
         tabs_inv = st.tabs(
@@ -1366,7 +1450,7 @@ else:
                             "instrumento":ins_r,"monto":mon_r,"rentabilidad":rent_r,
                             "mensaje":nota_r,"tipo_registro":"registro_cliente"}])
                         write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
-                        st.success("✅ Inversión registrada"); st.cache_data.clear(); st.rerun()
+                        st.success("✅ Inversión registrada"); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
             if regs.empty:
                 st.info("📭 Sin inversiones registradas.")
@@ -1399,7 +1483,7 @@ else:
                             "instrumento":ins_a,"monto":mon_a,"rentabilidad":0,
                             "mensaje":msg_a,"tipo_registro":"recomendacion_admin"}])
                         write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
-                        st.success("✅ Recomendación enviada"); st.cache_data.clear()
+                        st.success("✅ Recomendación enviada"); st.cache_data.clear(); st.session_state.pop('data_cache', None)
             else:
                 if recs.empty:
                     st.info("📭 Tu contador/a aún no te envió recomendaciones.")
@@ -1417,7 +1501,7 @@ else:
                     st.info("El cliente no tiene inversiones registradas.")
                 else:
                     ra1,ra2,ra3 = st.columns(3)
-                    ra1.metric("Total Invertido",fmt_ar(regs['monto'].sum()))
+                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'], errors='coerce').fillna(0).sum()))
                     ra2.metric("Posiciones",str(len(regs)))
                     ra3.metric("Recomendaciones",str(len(recs)))
                     df_pos = regs[['fecha','instrumento','monto','rentabilidad','mensaje']].copy()
@@ -1450,7 +1534,7 @@ else:
                             df_u.loc[df_u['email']==user['email'],'password'] = n1
                             write_ws("Users", df_u)
                             st.success("Contrasena actualizada. Reingrsa.")
-                            st.session_state.clear(); st.cache_data.clear(); st.rerun()
+                            st.session_state.clear(); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
         with tab_pf2:
             st.markdown("#### 📱 Personalizar mensaje de recordatorio WhatsApp")
@@ -1486,7 +1570,7 @@ else:
                         df_u['wa_template'] = ''
                     df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = nuevo_tpl
                     write_ws("Users", df_u)
-                    st.cache_data.clear()
+                    st.cache_data.clear(); st.session_state.pop('data_cache', None)
                     st.success("Mensaje guardado de forma permanente en tu perfil!")
                 if st.button("Restaurar mensaje por defecto", use_container_width=True):
                     st.session_state[tpl_key] = tpl_default
@@ -1496,7 +1580,7 @@ else:
                         df_u['wa_template'] = ''
                     df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = tpl_default
                     write_ws("Users", df_u)
-                    st.cache_data.clear()
+                    st.cache_data.clear(); st.session_state.pop('data_cache', None)
                     st.rerun()
             with col_wa2:
                 st.markdown("##### Vista previa")
