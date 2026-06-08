@@ -632,10 +632,24 @@ else:
         pend_t = df_c['pendiente'].sum()
 
         # CAJA REAL: acumulada desde siempre hasta hoy (independiente del filtro de período)
-        # = Total ingresos cobrados - Total gastos realizados - Pendientes de cobro
-        ing_total_acum  = df_c[df_c['tipo']=='Ingreso']['monto'].sum()
-        gas_total_acum  = df_c[df_c['tipo']=='Gasto']['monto'].sum()
-        caja = ing_total_acum - gas_total_acum - pend_t
+        # Opción B: cuotas/diferidos NO restan hasta que se confirma el pago
+        # = Ingresos cobrados - Gastos efectivizados - Pendientes de cobro
+        ing_total_acum = df_c[df_c['tipo']=='Ingreso']['monto'].sum()
+
+        # Gastos efectivizados = gastos SIN fecha_vencimiento pendiente
+        # (los que tienen fecha_vencimiento son compromisos futuros, no salen hasta confirmar)
+        _df_gas = df_c[df_c['tipo']=='Gasto'].copy()
+        if 'fecha_vencimiento' in _df_gas.columns:
+            _fv = _df_gas['fecha_vencimiento'].astype(str).str.strip().str.upper()
+            # Excluir: tienen fecha_vencimiento válida Y no están marcados como PAGADO
+            _es_comprometido = _fv.notna() & (~_fv.isin(['', 'NAN', 'PAGADO']))
+            gas_efectivo    = _df_gas[~_es_comprometido]['monto'].sum()
+            gas_comprometido = _df_gas[_es_comprometido]['monto'].sum()
+        else:
+            gas_efectivo     = _df_gas['monto'].sum()
+            gas_comprometido = 0.0
+
+        caja = ing_total_acum - gas_efectivo - pend_t
         inv_m  = df_inv_raw[df_inv_raw['email']==cliente_mail]
         inv_total = pd.to_numeric(inv_m['monto'],errors='coerce').sum() if not inv_m.empty and 'monto' in inv_m.columns else 0
 
@@ -654,9 +668,20 @@ else:
         m6,m7,m8,_ = st.columns(4)
         m6.metric("🏦 CAJA REAL",  fmt_ar(caja),
                    delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
-                   help="Acumulado total: Ingresos cobrados - Gastos - Pendientes de cobro")
-        m7.metric("⏳ PENDIENTES", fmt_ar(pend_t))
+                   help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
+        m7.metric("⏳ PENDIENTES", fmt_ar(pend_t),
+                   help="Cobros pendientes de tus clientes")
         m8.metric("📦 INVERTIDO",  fmt_ar(inv_total))
+        if gas_comprometido > 0:
+            st.markdown(
+                f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
+                f"border-radius:8px; padding:8px 14px; margin:4px 0; font-size:0.9rem;'>"
+                f"⏰ <strong>Comprometido futuro:</strong> {fmt_ar(gas_comprometido)} "
+                f"en cuotas/diferidos pendientes de pago — "
+                f"<strong>Proyección de caja:</strong> {fmt_ar(caja - gas_comprometido)}"
+                f"</div>",
+                unsafe_allow_html=True
+            )
 
         # PUNTO DE EQUILIBRIO — solo admin
         if es_admin and gas_f > 0 and ing > 0:
@@ -1121,7 +1146,7 @@ else:
                 if tp_v == "Ingreso":
                     ip1, ip2 = st.columns(2)
                     pn_v = ip1.number_input("⏳ Pendiente de cobro ($)", min_value=0.0, step=100.0)
-                    wa_v = ip2.text_input("📱 WhatsApp del deudor (549...)")
+                    wa_v = ip2.text_input("📱 WhatsApp cliente (549...)")
 
                 # Cheque del 1° cobro (Ingreso)
                 ch_num_v = ch_banco_v = ch_librador_v = ch_venc_v = ""
@@ -1629,7 +1654,7 @@ else:
                         st.success("✅ Recomendación enviada"); st.cache_data.clear(); st.session_state.pop('data_cache', None)
             else:
                 if recs.empty:
-                    st.info("📭 Tu contador/a aún no te envió recomendaciones.")
+                    st.info("📭 Tu contadora aún no te envió recomendaciones.")
                 else:
                     for _,r in recs.sort_index(ascending=False).iterrows():
                         with st.expander(f"📊 {r['instrumento']} — {r['fecha']}"):
