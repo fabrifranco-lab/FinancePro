@@ -25,6 +25,19 @@ def fmt_ar(valor):
         return f"$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
     except: return "$ 0"
 
+def fmt_ar_m(valor):
+    """Formato abreviado para métricas: M para millones, K para miles."""
+    try:
+        v = abs(float(valor))
+        signo = "-" if float(valor) < 0 else ""
+        if v >= 1_000_000:
+            return f"{signo}$ {v/1_000_000:.2f}M".replace(".",",")
+        elif v >= 100_000:
+            return f"{signo}$ {v/1_000:.0f}K".replace(".",",")
+        else:
+            return fmt_ar(valor)
+    except: return "$ 0"
+
 COLORS = {
     "primary":   "#1B4F8A",
     "secondary": "#2ECC71",
@@ -108,15 +121,25 @@ input, select, textarea {{ color:{COLORS['text']} !important; }}
 .stMain label, .stForm label {{ color:{COLORS['text']} !important; font-weight:600 !important; font-size:0.85rem !important; }}
 
 [data-testid="stMetric"] {{
-    background:{COLORS['white']} !important; padding:16px !important;
+    background:{COLORS['white']} !important;
+    padding:10px 12px !important;
     border-radius:12px !important; border:1px solid #D5DBDB !important;
     border-left:5px solid {COLORS['primary']} !important;
     box-shadow:0 2px 8px rgba(0,0,0,0.07) !important;
     transition:transform 0.2s, box-shadow 0.2s !important;
+    overflow:hidden !important;
 }}
 [data-testid="stMetric"]:hover {{ transform:translateY(-2px) !important; box-shadow:0 6px 16px rgba(0,0,0,0.12) !important; }}
-[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.78rem !important; font-weight:700 !important; letter-spacing:0.06em !important; text-transform:uppercase !important; }}
-[data-testid="stMetricValue"] {{ font-size:1.3rem !important; color:{COLORS['text']} !important; font-weight:700 !important; }}
+[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.04em !important; text-transform:uppercase !important; }}
+[data-testid="stMetricValue"] {{
+    font-size:clamp(0.75rem, 1.1vw, 1.05rem) !important;
+    color:{COLORS['text']} !important;
+    font-weight:700 !important;
+    word-break:break-all !important;
+    overflow-wrap:anywhere !important;
+    white-space:normal !important;
+    line-height:1.2 !important;
+}}
 
 .stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
 .stTabs [data-baseweb="tab"] {{ border-radius:8px !important; font-weight:600 !important; color:#7F8C8D !important; padding:8px 16px !important; }}
@@ -381,11 +404,14 @@ if not st.session_state['logged_in']:
                 match = users[(users['email']==u_email) & (users['password']==u_pass)]
                 if not match.empty:
                     u_dict = match.iloc[0].to_dict()
-                    # Cargar mensaje WA personalizado si existe en columna 'wa_template' de Users
                     tpl_saved = str(u_dict.get('wa_template','')).strip()
                     if tpl_saved and tpl_saved not in ('nan',''):
                         st.session_state['wa_template'] = tpl_saved
-                    st.session_state.update({'logged_in':True,'user':u_dict})
+                    st.session_state.update({
+                        'logged_in': True,
+                        'user': u_dict,
+                        'login_ts': time.time()   # timestamp del login para control de 12hs
+                    })
                     st.rerun()
                 else:
                     st.error("❌ Email o contraseña incorrectos")
@@ -395,6 +421,17 @@ if not st.session_state['logged_in']:
 # 5. APP PRINCIPAL
 # ─────────────────────────────────────────────
 else:
+    # ── Verificar sesión de 12 horas ──
+    _SESSION_HS = 12
+    _login_ts   = st.session_state.get('login_ts', time.time())
+    _elapsed_hs = (time.time() - _login_ts) / 3600
+    if _elapsed_hs > _SESSION_HS:
+        st.session_state.clear()
+        st.cache_data.clear()
+        st.session_state.pop('data_cache', None)
+        st.info("⏰ Tu sesión expiró después de 12 horas. Ingresá nuevamente.")
+        st.rerun()
+
     user        = st.session_state['user']
     es_admin    = user['rol'] == 'admin'
     df_config   = data['config'].copy()
@@ -417,7 +454,494 @@ else:
             cliente_mail, sel_nombre = user['email'].strip().lower(), user['nombre']
 
         st.markdown("---")
-        menu  = st.radio("📌 MENÚ", ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"])
+        _opciones_menu = ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"]
+        if es_admin:
+            _opciones_menu.insert(3, "🤖 Asistente IA")
+        menu  = st.radio("📌 MENÚ", _opciones_menu)
+        st.markdown("**🗓️ PERÍODO:**")
+        rango = st.date_input("", [date.today().replace(day=1), date.today()], label_visibility="collapsed")
+        st.markdown("---")
+        rol_label = "ADMIN" if es_admin else "CLIENTE"
+        st.markdown(f"""
+        <div style="padding:8px 0;">
+            <p style="margin:0; font-size:0.78rem; color:#95A5A6;">Usuario activo</p>
+            <p style="margin:4px 0 0 0; font-weight:700; font-size:0.95rem;">{user['nombre']}</p>
+            <span class="rol-badge {'admin' if es_admin else ''}">{rol_label}</span>
+        </div>""", unsafe_allow_html=True)
+        st.markdown("---")
+        _ts_login   = st.session_state.get('login_ts', time.time())
+        _mins_rest  = max(0, int((_ts_login + 12*3600 - time.time()) / 60))
+        _hs_rest    = _mins_rest // 60
+        _min_rest_r = _mins_rest % 60
+        st.markdown(
+            f"<small style='color:#94A3B8;font-size:0.7rem;'>"
+            f"&#9201; Sesion: {_hs_rest}h {_min_rest_r}m restantes</small>",
+            unsafe_allow_html=True
+        )
+        dark = st.session_state.get('dark_mode', False)
+        lbl_dark = "☀️ Modo Claro" if dark else "🌙 Modo Oscuro"
+        if st.button(lbl_dark, use_container_width=True):
+            st.session_state['dark_mode'] = not dark
+            st.rerun()
+        if st.button("🚪 Cerrar Sesion", use_container_width=True):
+            st.session_state.clear(); st.cache_data.clear(); st.rerun()
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from google.oauth2.service_account import Credentials
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, date
+import time
+import urllib.parse
+import io
+
+# ─────────────────────────────────────────────
+# 1. CONFIG GLOBAL
+# ─────────────────────────────────────────────
+st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
+
+def fmt_ar(valor):
+    """Formatea en pesos AR. Sin decimales si el valor es entero."""
+    try:
+        v = float(valor)
+        if v == int(v):
+            return f"$ {int(v):,}".replace(",",".")
+        return f"$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    except: return "$ 0"
+
+def fmt_ar_m(valor):
+    """Formato abreviado para métricas: M para millones, K para miles."""
+    try:
+        v = abs(float(valor))
+        signo = "-" if float(valor) < 0 else ""
+        if v >= 1_000_000:
+            return f"{signo}$ {v/1_000_000:.2f}M".replace(".",",")
+        elif v >= 100_000:
+            return f"{signo}$ {v/1_000:.0f}K".replace(".",",")
+        else:
+            return fmt_ar(valor)
+    except: return "$ 0"
+
+COLORS = {
+    "primary":   "#1B4F8A",
+    "secondary": "#2ECC71",
+    "danger":    "#E74C3C",
+    "warning":   "#F39C12",
+    "accent":    "#8E44AD",
+    "neutral":   "#ECF0F1",
+    "dark":      "#1A252F",
+    "text":      "#2C3E50",
+    "white":     "#FFFFFF",
+    "fijo":      "#E74C3C",
+    "variable":  "#F39C12",
+    "chart": ["#1B4F8A","#2ECC71","#E74C3C","#F39C12",
+              "#8E44AD","#1ABC9C","#E67E22","#3498DB",
+              "#D35400","#27AE60","#C0392B","#2980B9"]
+}
+
+# ─────────────────────────────────────────────
+# 2. CSS GLOBAL
+# ─────────────────────────────────────────────
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"] {{ font-family: 'Inter', sans-serif !important; }}
+.stApp {{ background-color: {COLORS['neutral']} !important; }}
+
+section[data-testid="stSidebar"] {{
+    background: linear-gradient(180deg, {COLORS['dark']} 0%, #243B55 100%) !important;
+    min-width: 280px !important; overflow: visible !important;
+    border-right: 3px solid {COLORS['primary']} !important;
+}}
+section[data-testid="stSidebar"] * {{ color: #FFFFFF !important; }}
+section[data-testid="stSidebar"] label {{
+    color: #F0F4FF !important; font-weight:700 !important;
+    font-size:0.82rem !important; letter-spacing:0.06em !important;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5) !important;
+}}
+section[data-testid="stSidebar"] .stRadio label {{
+    color: #FFFFFF !important; font-size:0.95rem !important; font-weight:600 !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {{ color: #CBD5E1 !important; }}
+/* Selectbox y date_input del sidebar con fondo oscuro contrastado */
+section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+    background-color: rgba(255,255,255,0.12) !important;
+    border: 1.5px solid rgba(255,255,255,0.35) !important;
+    border-radius: 8px !important;
+}}
+section[data-testid="stSidebar"] div[data-baseweb="select"] > div:hover {{
+    background-color: rgba(255,255,255,0.2) !important;
+    border-color: rgba(255,255,255,0.6) !important;
+}}
+section[data-testid="stSidebar"] div[data-baseweb="input"] {{
+    background-color: rgba(255,255,255,0.12) !important;
+    border: 1.5px solid rgba(255,255,255,0.35) !important;
+    border-radius: 8px !important;
+}}
+/* Texto dentro de selectbox sidebar */
+section[data-testid="stSidebar"] div[data-baseweb="select"] span {{ color: #FFFFFF !important; font-weight:600 !important; }}
+section[data-testid="stSidebar"] input {{ color: #FFFFFF !important; font-weight:600 !important; }}
+
+div[data-baseweb="popover"] {{ z-index:99999 !important; position:fixed !important; }}
+div[data-baseweb="calendar"] {{
+    z-index:99999 !important; background-color:white !important;
+    border:2px solid {COLORS['primary']} !important; border-radius:12px !important;
+    box-shadow:0 20px 60px rgba(0,0,0,0.4) !important; overflow:visible !important;
+}}
+div[data-baseweb="calendar"] * {{ color:#1A252F !important; }}
+div[data-baseweb="calendar"] header {{ background-color:{COLORS['primary']} !important; border-radius:10px 10px 0 0 !important; }}
+div[data-baseweb="calendar"] header button,
+div[data-baseweb="calendar"] header span {{ color:white !important; font-weight:700 !important; }}
+[data-baseweb="calendar"] [aria-selected="true"] div {{
+    background-color:{COLORS['primary']} !important; color:white !important; border-radius:50% !important;
+}}
+
+div[data-baseweb="select"] > div, div[data-baseweb="input"], div[data-baseweb="textarea"] {{
+    background-color:{COLORS['white']} !important; border:1.5px solid #BDC3C7 !important;
+    border-radius:8px !important; transition:border-color 0.2s !important;
+}}
+div[data-baseweb="select"] > div:hover, div[data-baseweb="input"]:hover {{ border-color:{COLORS['primary']} !important; }}
+input, select, textarea {{ color:{COLORS['text']} !important; }}
+.stMain label, .stForm label {{ color:{COLORS['text']} !important; font-weight:600 !important; font-size:0.85rem !important; }}
+
+[data-testid="stMetric"] {{
+    background:{COLORS['white']} !important;
+    padding:10px 12px !important;
+    border-radius:12px !important; border:1px solid #D5DBDB !important;
+    border-left:5px solid {COLORS['primary']} !important;
+    box-shadow:0 2px 8px rgba(0,0,0,0.07) !important;
+    transition:transform 0.2s, box-shadow 0.2s !important;
+    overflow:hidden !important;
+}}
+[data-testid="stMetric"]:hover {{ transform:translateY(-2px) !important; box-shadow:0 6px 16px rgba(0,0,0,0.12) !important; }}
+[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.04em !important; text-transform:uppercase !important; }}
+[data-testid="stMetricValue"] {{
+    font-size:clamp(0.75rem, 1.1vw, 1.05rem) !important;
+    color:{COLORS['text']} !important;
+    font-weight:700 !important;
+    word-break:break-all !important;
+    overflow-wrap:anywhere !important;
+    white-space:normal !important;
+    line-height:1.2 !important;
+}}
+
+.stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
+.stTabs [data-baseweb="tab"] {{ border-radius:8px !important; font-weight:600 !important; color:#7F8C8D !important; padding:8px 16px !important; }}
+.stTabs [aria-selected="true"] {{ background-color:{COLORS['primary']} !important; color:white !important; }}
+
+.stButton button {{
+    background:linear-gradient(135deg, {COLORS['primary']}, #2980B9) !important;
+    color:white !important; border:none !important; border-radius:8px !important;
+    font-weight:600 !important; padding:8px 20px !important;
+    transition:all 0.2s !important; box-shadow:0 2px 6px rgba(27,79,138,0.3) !important;
+}}
+.stButton button:hover {{ transform:translateY(-1px) !important; box-shadow:0 4px 12px rgba(27,79,138,0.4) !important; }}
+
+.streamlit-expanderHeader {{
+    background-color:{COLORS['white']} !important; border:1px solid #D5DBDB !important;
+    border-radius:10px !important; font-weight:600 !important; color:{COLORS['text']} !important;
+}}
+[data-testid="stDataFrame"] {{ border-radius:10px !important; overflow:hidden !important; }}
+
+div[data-testid="stForm"] {{
+    background:white !important; border-radius:18px !important;
+    padding:32px 28px !important; box-shadow:0 24px 64px rgba(0,0,0,0.35) !important; border:none !important;
+}}
+div[data-testid="stForm"] label {{
+    color:#1A252F !important; font-weight:700 !important;
+    font-size:0.88rem !important; letter-spacing:0.03em !important;
+}}
+div[data-testid="stForm"] div[data-baseweb="input"] {{
+    background-color: #F0F4FF !important;
+    border: 2px solid #1B4F8A !important;
+    border-radius: 10px !important;
+}}
+div[data-testid="stForm"] div[data-baseweb="input"] input {{
+    color: #1A252F !important; font-weight: 600 !important; font-size: 0.95rem !important;
+}}
+div[data-testid="stForm"] div[data-baseweb="input"]:focus-within {{
+    border-color: #8E44AD !important;
+    box-shadow: 0 0 0 3px rgba(142,68,173,0.2) !important;
+}}
+div[data-testid="stForm"] button[kind="primaryFormSubmit"] {{
+    background:linear-gradient(135deg, #1B4F8A, #2980B9) !important;
+    color:white !important; border-radius:10px !important; font-size:1rem !important;
+    font-weight:700 !important; padding:12px !important; border:none !important;
+    box-shadow:0 4px 14px rgba(27,79,138,0.4) !important;
+}}
+
+.page-header {{
+    background:linear-gradient(135deg, {COLORS['primary']} 0%, #2980B9 100%);
+    color:white !important; padding:18px 24px; border-radius:14px;
+    margin-bottom:20px; box-shadow:0 4px 15px rgba(27,79,138,0.25);
+}}
+.page-header h2 {{ margin:0; color:white !important; font-size:1.4rem !important; font-weight:700 !important; }}
+.page-header span {{ font-size:0.88rem; opacity:0.85; }}
+
+.whatsapp-btn {{
+    background-color:#25D366; color:white !important; padding:7px 14px;
+    border-radius:8px; text-decoration:none; font-size:0.8rem; font-weight:700;
+    box-shadow:0 2px 6px rgba(37,211,102,0.35); transition:all 0.2s; display:inline-block;
+}}
+
+.rol-badge {{
+    display:inline-block; background:{COLORS['secondary']}; color:white !important;
+    font-size:0.7rem; font-weight:700; padding:3px 10px; border-radius:20px;
+    letter-spacing:0.05em; margin-left:8px;
+}}
+.rol-badge.admin {{ background:{COLORS['accent']}; }}
+
+.alerta-pendiente {{
+    background:linear-gradient(135deg,#FEF9E7,#FDEBD0) !important;
+    border-left:4px solid {COLORS['warning']} !important;
+    border-radius:8px !important; padding:10px 14px !important; margin:6px 0 !important;
+}}
+
+.sidebar-brand {{ text-align:center; padding:16px 0 8px 0; border-bottom:1px solid rgba(255,255,255,0.1); margin-bottom:12px; }}
+.sidebar-brand h1 {{ color:white !important; font-size:1.5rem !important; font-weight:800 !important; margin:0 !important; letter-spacing:-0.02em; }}
+.sidebar-brand small {{ color:#95A5A6 !important; font-size:0.75rem !important; }}
+
+.inv-card {{
+    background:white; border-radius:12px; padding:16px 20px;
+    border:1px solid #D5DBDB; border-left:5px solid {COLORS['accent']};
+    box-shadow:0 2px 8px rgba(0,0,0,0.06); margin-bottom:10px;
+}}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── MODO OSCURO: inyección dinámica de CSS cuando está activado ──
+_DARK_CSS = """
+<style>
+.stApp { background-color: #0F172A !important; }
+[data-testid="stMain"] > div { background-color: #0F172A !important; }
+[data-testid="stMetric"] { background: #1E293B !important; border-color: #334155 !important; border-left-color: #3B82F6 !important; }
+[data-testid="stMetricValue"] { color: #F1F5F9 !important; }
+[data-testid="stMetricLabel"] { color: #94A3B8 !important; }
+.stTabs [data-baseweb="tab-list"] { background-color: #1E293B !important; }
+.stTabs [data-baseweb="tab"] { color: #94A3B8 !important; }
+.stTabs [aria-selected="true"] { background-color: #3B82F6 !important; color: white !important; }
+.streamlit-expanderHeader { background-color: #1E293B !important; border-color: #334155 !important; color: #E2E8F0 !important; }
+div[data-baseweb="select"] > div, div[data-baseweb="input"], div[data-baseweb="textarea"] { background-color: #1E293B !important; border-color: #475569 !important; }
+input, select, textarea { color: #F1F5F9 !important; }
+.stMain label, .stForm label { color: #CBD5E1 !important; }
+[data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] span { color: #CBD5E1 !important; }
+h1,h2,h3,h4 { color: #F1F5F9 !important; }
+[data-testid="stDataFrame"] th { background: #0F172A !important; color: #94A3B8 !important; }
+[data-testid="stDataFrame"] td { background: #1E293B !important; color: #E2E8F0 !important; }
+.alerta-pendiente { background: linear-gradient(135deg,#292524,#3d2e1e) !important; }
+.inv-card { background: #1E293B !important; border-color: #334155 !important; }
+.page-header { box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important; }
+div[data-testid="stForm"] { background: #1E293B !important; box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important; }
+div[data-testid="stForm"] label { color: #CBD5E1 !important; }
+div[data-testid="stForm"] div[data-baseweb="input"] { background-color: #0F172A !important; border-color: #3B82F6 !important; }
+div[data-testid="stForm"] div[data-baseweb="input"] input { color: #F1F5F9 !important; }
+.stButton button { background: linear-gradient(135deg, #1D4ED8, #2563EB) !important; }
+.stRadio label { color: #E2E8F0 !important; }
+/* textarea en perfil WA modo oscuro */
+textarea { background-color: #1E293B !important; color: #F1F5F9 !important; border-color: #475569 !important; }
+[data-testid="stNotificationContentInfo"] { background: #1E3A5F !important; color: #93C5FD !important; }
+[data-testid="stNotificationContentWarning"] { background: #3D2A00 !important; color: #FCD34D !important; }
+[data-testid="stNotificationContentSuccess"] { background: #052E16 !important; color: #86EFAC !important; }
+[data-testid="stCaptionContainer"] { color: #64748B !important; }
+[data-baseweb="popover"] [role="option"] { background: #1E293B !important; color: #E2E8F0 !important; }
+[data-baseweb="popover"] [role="option"]:hover { background: #334155 !important; }
+/* Todos los textos generales claros en modo oscuro */
+[data-testid="stMarkdownContainer"] * { color: #E2E8F0 !important; }
+[data-testid="stMarkdownContainer"] strong,
+[data-testid="stMarkdownContainer"] b { color: #F8FAFC !important; }
+[data-testid="stMarkdownContainer"] small { color: #94A3B8 !important; }
+[data-testid="stMarkdownContainer"] code { background: #334155 !important; color: #7DD3FC !important; }
+/* Alerta pendiente en dark: texto legible */
+.alerta-pendiente * { color: #F1C40F !important; }
+.alerta-pendiente strong { color: #FBBF24 !important; }
+/* Caption / info / warning */
+[data-testid="stCaption"] { color: #64748B !important; }
+[data-testid="stNotificationContentInfo"] { background: #1E3A5F !important; color: #93C5FD !important; }
+/* Expander content */
+[data-testid="stExpanderDetails"] { background: #1E293B !important; }
+[data-testid="stExpanderDetails"] * { color: #E2E8F0 !important; }
+/* Divider */
+hr { border-color: #334155 !important; }
+/* selectbox dropdown list */
+[data-baseweb="popover"] [role="option"] { background: #1E293B !important; color: #E2E8F0 !important; }
+/* stMetric delta */
+[data-testid="stMetricDelta"] { color: #86EFAC !important; }
+/* page header text always white */
+.page-header, .page-header * { color: white !important; }
+/* radio buttons label dark mode */
+[data-testid="stWidgetLabel"] { color: #CBD5E1 !important; }
+</style>
+"""
+
+# ─────────────────────────────────────────────
+# 3. DATOS
+# ─────────────────────────────────────────────
+URL_SHEET = "https://docs.google.com/spreadsheets/d/152P8Nuk-dlb7S_EYrodxXzAsqZNBXJ5eV2mdzXKRVn4/edit#gid=33562255"
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+@st.cache_resource(show_spinner=False)
+def get_gc():
+    """Conexión Google autenticada — cacheada como resource (no se recrea en cada rerun)."""
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+@st.cache_resource(show_spinner=False)
+def get_sheet():
+    """Objeto Spreadsheet cacheado — una sola apertura por sesión del servidor."""
+    return get_gc().open_by_url(URL_SHEET)
+
+def open_sheet():
+    return get_sheet()
+
+def write_ws(ws_name, df):
+    """Escribe DataFrame en la hoja. Crea la hoja si no existe."""
+    sh = open_sheet()
+    try:
+        ws = sh.worksheet(ws_name)
+    except Exception:
+        # La hoja no existe → crearla automáticamente
+        ws = sh.add_worksheet(title=ws_name, rows=1000, cols=30)
+    ws.clear()
+    set_with_dataframe(ws, df, include_index=False, resize=True)
+    if 'data_cache' not in st.session_state:
+        st.session_state['data_cache'] = {}
+    st.session_state['data_cache'][ws_name] = df.copy()
+
+def read_ws(sh, name):
+    try:
+        ws = sh.worksheet(name)
+    except Exception:
+        return pd.DataFrame()   # hoja no existe → DataFrame vacío
+    df  = get_as_dataframe(ws, evaluate_formulas=True, dtype=str)
+    df  = df.dropna(how='all').reset_index(drop=True)
+    df  = df.loc[:, df.columns.notna()]
+    df  = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+    return df
+
+@st.cache_data(ttl=120, show_spinner="Cargando datos...")
+def cargar_todo(url):
+    sh = open_sheet()
+    return {
+        "users":  read_ws(sh, "Users"),
+        "movs":   read_ws(sh, "Movimientos"),
+        "config": read_ws(sh, "Config"),
+        "inv":    read_ws(sh, "Inversiones"),
+    }
+
+def get_data():
+    """Retorna datos: usa cache local (session_state) si existe, si no el cache de 120s."""
+    base = cargar_todo(URL_SHEET)
+    cache = st.session_state.get('data_cache', {})
+    return {
+        "users":  cache.get("Users",        base["users"]),
+        "movs":   cache.get("Movimientos",  base["movs"]),
+        "config": cache.get("Config",       base["config"]),
+        "inv":    cache.get("Inversiones",  base["inv"]),
+    }
+
+data = get_data()
+
+if 'logged_in' not in st.session_state:
+    st.session_state.update({'logged_in': False, 'user': None})
+
+# ─────────────────────────────────────────────
+# 4. LOGIN
+# ─────────────────────────────────────────────
+if not st.session_state['logged_in']:
+    st.markdown("""
+    <style>
+    .stApp { background: linear-gradient(135deg, #1B4F8A 0%, #243B55 50%, #1A252F 100%) !important; }
+    header[data-testid="stHeader"] { background: transparent !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.1, 1])
+    with c2:
+        st.markdown("""
+        <div style="text-align:center; padding:48px 0 24px 0;">
+            <div style="font-size:3.8rem; filter:drop-shadow(0 4px 12px rgba(0,0,0,0.3));">💼</div>
+            <h1 style="color:white; font-size:2.4rem; font-weight:800; margin:10px 0 6px 0;
+                       letter-spacing:-0.03em; text-shadow:0 2px 8px rgba(0,0,0,0.3);">FinancePRO</h1>
+            <p style="color:#94A3B8; font-size:0.9rem; margin:0; letter-spacing:0.04em;">GESTIÓN FINANCIERA INTELIGENTE</p>
+        </div>
+        """, unsafe_allow_html=True)
+        with st.form("login"):
+            st.markdown('<p style="color:#64748B; font-size:0.8rem; font-weight:700; letter-spacing:0.1em; margin:0 0 20px 0; text-align:center;">ACCESO AL SISTEMA</p>', unsafe_allow_html=True)
+            u_email = st.text_input("📧 Email", placeholder="tucuenta@email.com").lower().strip()
+            u_pass  = st.text_input("🔒 Contraseña", type="password", placeholder="••••••••").strip()
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.form_submit_button("INGRESAR →", use_container_width=True):
+                users = data['users'].copy()
+                users['email']    = users['email'].astype(str).str.lower().str.strip()
+                # Limpiar password: strip, quitar .0 de floats, quitar comillas extras
+                users['password'] = (users['password'].astype(str)
+                                     .str.strip()
+                                     .str.replace(r'\.0$','',regex=True)
+                                     .str.replace(r'^["\']+|["\']+$','',regex=True))
+                u_pass = u_pass.strip()
+                match = users[(users['email']==u_email) & (users['password']==u_pass)]
+                if not match.empty:
+                    u_dict = match.iloc[0].to_dict()
+                    tpl_saved = str(u_dict.get('wa_template','')).strip()
+                    if tpl_saved and tpl_saved not in ('nan',''):
+                        st.session_state['wa_template'] = tpl_saved
+                    st.session_state.update({
+                        'logged_in': True,
+                        'user': u_dict,
+                        'login_ts': time.time()   # timestamp del login para control de 12hs
+                    })
+                    st.rerun()
+                else:
+                    st.error("❌ Email o contraseña incorrectos")
+        st.markdown('<p style="text-align:center; color:#64748B; font-size:0.75rem; margin-top:24px;">v12.2 · Desarrollado con ❤️</p>', unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# 5. APP PRINCIPAL
+# ─────────────────────────────────────────────
+else:
+    # ── Verificar sesión de 12 horas ──
+    _SESSION_HS = 12
+    _login_ts   = st.session_state.get('login_ts', time.time())
+    _elapsed_hs = (time.time() - _login_ts) / 3600
+    if _elapsed_hs > _SESSION_HS:
+        st.session_state.clear()
+        st.cache_data.clear()
+        st.session_state.pop('data_cache', None)
+        st.info("⏰ Tu sesión expiró después de 12 horas. Ingresá nuevamente.")
+        st.rerun()
+
+    user        = st.session_state['user']
+    es_admin    = user['rol'] == 'admin'
+    df_config   = data['config'].copy()
+    df_movs_raw = data['movs'].copy()
+    df_inv_raw  = data['inv'].copy()
+
+    # Columna naturaleza en Config (Fijo / Variable)
+    if 'naturaleza' not in df_config.columns:
+        df_config['naturaleza'] = 'Variable'
+
+    # ── SIDEBAR ──
+    with st.sidebar:
+        st.markdown('<div class="sidebar-brand"><h1>💼 FinancePRO</h1><small>v12.2</small></div>', unsafe_allow_html=True)
+        if es_admin:
+            cl_df        = data['users'][data['users']['rol']=='cliente']
+            dict_c       = pd.Series(cl_df.email.values, index=cl_df.nombre).to_dict()
+            sel_nombre   = st.selectbox("👤 CLIENTE:", list(dict_c.keys()))
+            cliente_mail = dict_c[sel_nombre].strip().lower()
+        else:
+            cliente_mail, sel_nombre = user['email'].strip().lower(), user['nombre']
+
+        st.markdown("---")
+        _opciones_menu = ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"]
+        if es_admin:
+            _opciones_menu.insert(3, "🤖 Asistente IA")
+        menu  = st.radio("📌 MENÚ", _opciones_menu)
         st.markdown("**🗓️ PERÍODO:**")
         rango = st.date_input("", [date.today().replace(day=1), date.today()], label_visibility="collapsed")
         st.markdown("---")
@@ -658,20 +1182,20 @@ else:
 
         # Métricas fila 1
         m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("💰 INGRESOS",    fmt_ar(ing))
-        m2.metric("💸 GASTOS",      fmt_ar(gas))
-        m3.metric("🔒 G. FIJOS",    fmt_ar(gas_f))
-        m4.metric("📊 G. VARIABLES",fmt_ar(gas_v))
-        m5.metric("📈 UTILIDAD",    fmt_ar(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
+        m1.metric("💰 INGRESOS",    fmt_ar_m(ing))
+        m2.metric("💸 GASTOS",      fmt_ar_m(gas))
+        m3.metric("🔒 G. FIJOS",    fmt_ar_m(gas_f))
+        m4.metric("📊 G. VARIABLES",fmt_ar_m(gas_v))
+        m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
 
         # Métricas fila 2
         m6,m7,m8,_ = st.columns(4)
-        m6.metric("🏦 CAJA REAL",  fmt_ar(caja),
+        m6.metric("🏦 CAJA REAL",  fmt_ar_m(caja),
                    delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
                    help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
-        m7.metric("⏳ PENDIENTES", fmt_ar(pend_t),
+        m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t),
                    help="Cobros pendientes de tus clientes")
-        m8.metric("📦 INVERTIDO",  fmt_ar(inv_total))
+        m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total))
         if gas_comprometido > 0:
             st.markdown(
                 f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
@@ -1146,7 +1670,7 @@ else:
                 if tp_v == "Ingreso":
                     ip1, ip2 = st.columns(2)
                     pn_v = ip1.number_input("⏳ Pendiente de cobro ($)", min_value=0.0, step=100.0)
-                    wa_v = ip2.text_input("📱 WhatsApp cliente (549...)")
+                    wa_v = ip2.text_input("📱 WhatsApp del deudor (549...)")
 
                 # Cheque del 1° cobro (Ingreso)
                 ch_num_v = ch_banco_v = ch_librador_v = ch_venc_v = ""
@@ -1570,6 +2094,151 @@ else:
                 mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
 
     # ══════════════════════════════════════════
+    # ASISTENTE IA (solo admin)
+    elif menu == "🤖 Asistente IA":
+        st.markdown('<div class="page-header"><div><h2>🤖 Asistente IA</h2><span>Análisis con IA · Solo admin</span></div></div>', unsafe_allow_html=True)
+
+        # Contexto financiero del cliente
+        _ing_tot = df_c[df_c["tipo"]=="Ingreso"]["monto"].sum()
+        _gas_tot = df_c[df_c["tipo"]=="Gasto"]["monto"].sum()
+        _util    = _ing_tot - _gas_tot
+        _pend    = df_c["pendiente"].sum()
+        _top_ing = df_c[df_c["tipo"]=="Ingreso"].groupby("categoria")["monto"].sum().sort_values(ascending=False).head(5)
+        _top_gas = df_c[df_c["tipo"]=="Gasto"].groupby("categoria")["monto"].sum().sort_values(ascending=False).head(5)
+        _comprometido = 0.0
+        if "fecha_vencimiento" in df_c.columns:
+            _fv2 = df_c["fecha_vencimiento"].astype(str).str.upper()
+            _comprometido = df_c[(df_c["tipo"]=="Gasto") & ~_fv2.isin(["","NAN","PAGADO"])]["monto"].sum()
+
+        _ctx = (
+            f"CLIENTE: {sel_nombre}\n"
+            f"Ingresos totales: {fmt_ar(_ing_tot)}\n"
+            f"Gastos totales: {fmt_ar(_gas_tot)}\n"
+            f"Utilidad neta: {fmt_ar(_util)} ({(_util/_ing_tot*100):.1f}% margen)\n"
+            f"Pendientes de cobro: {fmt_ar(_pend)}\n"
+            f"Comprometido futuro: {fmt_ar(_comprometido)}\n"
+            f"Top ingresos: {dict(_top_ing)}\n"
+            f"Top gastos: {dict(_top_gas)}"
+        )
+
+        ai_t1, ai_t2, ai_t3 = st.tabs(["💬 Consulta Libre", "📊 Análisis Automático", "📝 Generar Recomendación"])
+
+        with ai_t1:
+            st.markdown(f"""<div style="background:#F0F7FF;border-left:4px solid #1B4F8A;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:0.85rem;">
+            📊 <strong>Contexto:</strong> {sel_nombre} — Ingresos {fmt_ar(_ing_tot)} · Gastos {fmt_ar(_gas_tot)} · Utilidad {fmt_ar(_util)}</div>""", unsafe_allow_html=True)
+            _ck = f"chat_ia_{cliente_mail}"
+            if _ck not in st.session_state:
+                st.session_state[_ck] = []
+            for _m in st.session_state[_ck]:
+                with st.chat_message(_m["role"], avatar="🤖" if _m["role"]=="assistant" else "👤"):
+                    st.markdown(_m["content"])
+            _prompt = st.chat_input("Preguntá sobre este cliente...", key="chat_ia_input")
+            if _prompt:
+                st.session_state[_ck].append({"role":"user","content":_prompt})
+                with st.chat_message("user", avatar="👤"):
+                    st.markdown(_prompt)
+                with st.chat_message("assistant", avatar="🤖"):
+                    with st.spinner("Analizando..."):
+                        try:
+                            import requests as _req
+                            _sys = (
+                                "Sos un asistente financiero experto que trabaja con una contadora argentina. "
+                                "Analizá los datos del cliente y respondé en español argentino, de forma clara y accionable.\n\n"
+                                f"DATOS DEL CLIENTE:\n{_ctx}"
+                            )
+                            _hist = [{"role":_m["role"],"content":_m["content"]} for _m in st.session_state[_ck]]
+                            _r = _req.post("https://api.anthropic.com/v1/messages",
+                                headers={
+                                    "Content-Type": "application/json",
+                                    "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
+                                    "anthropic-version": "2023-06-01"
+                                },
+                                json={"model":"claude-sonnet-4-6","max_tokens":1500,
+                                      "system":_sys,"messages":_hist})
+                            _ans = _r.json()["content"][0]["text"]
+                            st.markdown(_ans)
+                            st.session_state[_ck].append({"role":"assistant","content":_ans})
+                        except Exception as _e:
+                            st.error(f"Error IA: {_e}")
+            if st.session_state.get(_ck):
+                if st.button("🗑️ Limpiar chat", key="clear_chat_ia"):
+                    st.session_state[_ck] = []; st.rerun()
+
+        with ai_t2:
+            st.markdown("#### 📊 Análisis automático")
+            _tipo_a = st.selectbox("Tipo:", ["Salud financiera general",
+                "Gastos reducibles","Oportunidades de ahorro e inversión",
+                "Flujo de caja y liquidez","Alertas de riesgo financiero"])
+            if st.button("🔍 Generar análisis", key="btn_analizar_ia", use_container_width=True):
+                with st.spinner("Analizando..."):
+                    try:
+                        import requests as _req
+                        _p = (f"Realizá un análisis de '{_tipo_a}' para este cliente.\n\n{_ctx}\n\n"
+                              "Estructura: 1) Resumen ejecutivo 2) Hallazgos con números reales "
+                              "3) Alertas 4) Recomendaciones accionables. Usá markdown.")
+                        _r2 = _req.post("https://api.anthropic.com/v1/messages",
+                            headers={
+                                "Content-Type": "application/json",
+                                "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
+                                "anthropic-version": "2023-06-01"
+                            },
+                            json={"model":"claude-sonnet-4-6","max_tokens":2000,
+                                  "messages":[{"role":"user","content":_p}]})
+                        st.markdown(_r2.json()["content"][0]["text"])
+                    except Exception as _e:
+                        st.error(f"Error: {_e}")
+
+        with ai_t3:
+            st.markdown("#### 📝 Generar recomendación para enviar al cliente")
+            rc1, rc2 = st.columns(2)
+            _tema_r = rc1.selectbox("Tema:", ["Reducción de gastos","Estrategia de ahorro",
+                "Inversión en dólar MEP","Inversión en CEDEARs","FCI - Fondo común de inversión",
+                "Gestión de cobros pendientes","Mejora de rentabilidad"])
+            _tono_r = rc2.selectbox("Tono:", ["Profesional y directo","Amigable y motivador","Técnico detallado"])
+            _extra  = st.text_area("Contexto adicional (opcional):", height=70,
+                placeholder="Ej: El cliente quiere ahorrar para fin de año...")
+            if st.button("✨ Generar", use_container_width=True, key="btn_gen_rec"):
+                with st.spinner("Redactando..."):
+                    try:
+                        import requests as _req
+                        _pr = (f"Redactá una recomendación sobre '{_tema_r}' para este cliente.\n\n{_ctx}\n\n"
+                               f"Contexto extra: {_extra or 'Ninguno'}\n"
+                               f"Tono: {_tono_r}\n"
+                               "Dirigite directamente al cliente, en español argentino, 150-250 palabras, sin saludo ni despedida.")
+                        _r3 = _req.post("https://api.anthropic.com/v1/messages",
+                            headers={
+                                "Content-Type": "application/json",
+                                "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
+                                "anthropic-version": "2023-06-01"
+                            },
+                            json={"model":"claude-sonnet-4-6","max_tokens":800,
+                                  "messages":[{"role":"user","content":_pr}]})
+                        _rec = _r3.json()["content"][0]["text"]
+                        st.markdown(f"""<div style="background:white;border-radius:12px;padding:20px;
+                            border-left:5px solid #8E44AD;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                            {_rec.replace(chr(10),"<br>")}</div>""", unsafe_allow_html=True)
+                        st.session_state[f"rec_pend_{cliente_mail}"] = _rec
+                        st.session_state[f"rec_tema_{cliente_mail}"] = _tema_r
+                        st.success("Recomendación lista. Podés enviarla abajo.")
+                    except Exception as _e:
+                        st.error(f"Error: {_e}")
+            _rec_p = st.session_state.get(f"rec_pend_{cliente_mail}", "")
+            if _rec_p:
+                st.info(f"📬 Recomendación pendiente: **{st.session_state.get(f'rec_tema_{cliente_mail}','')}**")
+                if st.button("📤 Enviar al cliente", key="enviar_rec_ia", use_container_width=True):
+                    try:
+                        _ni = pd.DataFrame([{"email":cliente_mail,
+                            "fecha":date.today().strftime("%d/%m/%Y"),
+                            "instrumento":st.session_state.get(f"rec_tema_{cliente_mail}","Recomendación IA"),
+                            "monto":0,"rentabilidad":0,"mensaje":_rec_p,
+                            "tipo_registro":"recomendacion_admin"}])
+                        write_ws("Inversiones", pd.concat([df_inv_raw,_ni],ignore_index=True))
+                        st.session_state.pop(f"rec_pend_{cliente_mail}",None)
+                        st.session_state.pop(f"rec_tema_{cliente_mail}",None)
+                        st.cache_data.clear(); st.success("Enviada!"); st.rerun()
+                    except Exception as _e:
+                        st.error(f"Error: {_e}")
+
     # INVERSIONES
     # ══════════════════════════════════════════
     elif menu == "📈 Inversiones":
@@ -1701,7 +2370,7 @@ else:
                             df_u = data['users'].copy()
                             df_u.loc[df_u['email']==user['email'],'password'] = n1
                             write_ws("Users", df_u)
-                            st.success("Contrasena actualizada. Reingrsa.")
+                            st.success("Contrasena actualizada. Reingresa.")
                             st.session_state.clear(); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
         with tab_pf2:
