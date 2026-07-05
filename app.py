@@ -11,7 +11,8 @@ import time
 import urllib.parse
 import io
 
-L
+# ─────────────────────────────────────────────
+# 1. CONFIG GLOBAL
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
 
@@ -22,19 +23,6 @@ def fmt_ar(valor):
         if v == int(v):
             return f"$ {int(v):,}".replace(",",".")
         return f"$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
-    except: return "$ 0"
-
-def fmt_ar_m(valor):
-    """Formato abreviado para métricas: M para millones, K para miles."""
-    try:
-        v = abs(float(valor))
-        signo = "-" if float(valor) < 0 else ""
-        if v >= 1_000_000:
-            return f"{signo}$ {v/1_000_000:.2f}M".replace(".",",")
-        elif v >= 100_000:
-            return f"{signo}$ {v/1_000:.0f}K".replace(".",",")
-        else:
-            return fmt_ar(valor)
     except: return "$ 0"
 
 COLORS = {
@@ -120,25 +108,15 @@ input, select, textarea {{ color:{COLORS['text']} !important; }}
 .stMain label, .stForm label {{ color:{COLORS['text']} !important; font-weight:600 !important; font-size:0.85rem !important; }}
 
 [data-testid="stMetric"] {{
-    background:{COLORS['white']} !important;
-    padding:10px 12px !important;
+    background:{COLORS['white']} !important; padding:16px !important;
     border-radius:12px !important; border:1px solid #D5DBDB !important;
     border-left:5px solid {COLORS['primary']} !important;
     box-shadow:0 2px 8px rgba(0,0,0,0.07) !important;
     transition:transform 0.2s, box-shadow 0.2s !important;
-    overflow:hidden !important;
 }}
 [data-testid="stMetric"]:hover {{ transform:translateY(-2px) !important; box-shadow:0 6px 16px rgba(0,0,0,0.12) !important; }}
-[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.04em !important; text-transform:uppercase !important; }}
-[data-testid="stMetricValue"] {{
-    font-size:clamp(0.75rem, 1.1vw, 1.05rem) !important;
-    color:{COLORS['text']} !important;
-    font-weight:700 !important;
-    word-break:break-all !important;
-    overflow-wrap:anywhere !important;
-    white-space:normal !important;
-    line-height:1.2 !important;
-}}
+[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.78rem !important; font-weight:700 !important; letter-spacing:0.06em !important; text-transform:uppercase !important; }}
+[data-testid="stMetricValue"] {{ font-size:1.3rem !important; color:{COLORS['text']} !important; font-weight:700 !important; }}
 
 .stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
 .stTabs [data-baseweb="tab"] {{ border-radius:8px !important; font-weight:600 !important; color:#7F8C8D !important; padding:8px 16px !important; }}
@@ -403,14 +381,11 @@ if not st.session_state['logged_in']:
                 match = users[(users['email']==u_email) & (users['password']==u_pass)]
                 if not match.empty:
                     u_dict = match.iloc[0].to_dict()
+                    # Cargar mensaje WA personalizado si existe en columna 'wa_template' de Users
                     tpl_saved = str(u_dict.get('wa_template','')).strip()
                     if tpl_saved and tpl_saved not in ('nan',''):
                         st.session_state['wa_template'] = tpl_saved
-                    st.session_state.update({
-                        'logged_in': True,
-                        'user': u_dict,
-                        'login_ts': time.time()   # timestamp del login para control de 12hs
-                    })
+                    st.session_state.update({'logged_in':True,'user':u_dict})
                     st.rerun()
                 else:
                     st.error("❌ Email o contraseña incorrectos")
@@ -420,17 +395,6 @@ if not st.session_state['logged_in']:
 # 5. APP PRINCIPAL
 # ─────────────────────────────────────────────
 else:
-    # ── Verificar sesión de 12 horas ──
-    _SESSION_HS = 12
-    _login_ts   = st.session_state.get('login_ts', time.time())
-    _elapsed_hs = (time.time() - _login_ts) / 3600
-    if _elapsed_hs > _SESSION_HS:
-        st.session_state.clear()
-        st.cache_data.clear()
-        st.session_state.pop('data_cache', None)
-        st.info("⏰ Tu sesión expiró después de 12 horas. Ingresá nuevamente.")
-        st.rerun()
-
     user        = st.session_state['user']
     es_admin    = user['rol'] == 'admin'
     df_config   = data['config'].copy()
@@ -453,10 +417,7 @@ else:
             cliente_mail, sel_nombre = user['email'].strip().lower(), user['nombre']
 
         st.markdown("---")
-        _opciones_menu = ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"]
-        if es_admin:
-            _opciones_menu.insert(3, "🤖 Asistente IA")
-        menu  = st.radio("📌 MENÚ", _opciones_menu)
+        menu  = st.radio("📌 MENÚ", ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"])
         st.markdown("**🗓️ PERÍODO:**")
         rango = st.date_input("", [date.today().replace(day=1), date.today()], label_visibility="collapsed")
         st.markdown("---")
@@ -697,20 +658,20 @@ else:
 
         # Métricas fila 1
         m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("💰 INGRESOS",    fmt_ar_m(ing))
-        m2.metric("💸 GASTOS",      fmt_ar_m(gas))
-        m3.metric("🔒 G. FIJOS",    fmt_ar_m(gas_f))
-        m4.metric("📊 G. VARIABLES",fmt_ar_m(gas_v))
-        m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
+        m1.metric("💰 INGRESOS",    fmt_ar(ing))
+        m2.metric("💸 GASTOS",      fmt_ar(gas))
+        m3.metric("🔒 G. FIJOS",    fmt_ar(gas_f))
+        m4.metric("📊 G. VARIABLES",fmt_ar(gas_v))
+        m5.metric("📈 UTILIDAD",    fmt_ar(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
 
         # Métricas fila 2
         m6,m7,m8,_ = st.columns(4)
-        m6.metric("🏦 CAJA REAL",  fmt_ar_m(caja),
+        m6.metric("🏦 CAJA REAL",  fmt_ar(caja),
                    delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
                    help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
-        m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t),
+        m7.metric("⏳ PENDIENTES", fmt_ar(pend_t),
                    help="Cobros pendientes de tus clientes")
-        m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total))
+        m8.metric("📦 INVERTIDO",  fmt_ar(inv_total))
         if gas_comprometido > 0:
             st.markdown(
                 f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
@@ -1185,7 +1146,7 @@ else:
                 if tp_v == "Ingreso":
                     ip1, ip2 = st.columns(2)
                     pn_v = ip1.number_input("⏳ Pendiente de cobro ($)", min_value=0.0, step=100.0)
-                    wa_v = ip2.text_input("📱 WhatsApp del deudor (549...)")
+                    wa_v = ip2.text_input("📱 WhatsApp cliente (549...)")
 
                 # Cheque del 1° cobro (Ingreso)
                 ch_num_v = ch_banco_v = ch_librador_v = ch_venc_v = ""
@@ -1609,151 +1570,6 @@ else:
                 mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
 
     # ══════════════════════════════════════════
-    # ASISTENTE IA (solo admin)
-    elif menu == "🤖 Asistente IA":
-        st.markdown('<div class="page-header"><div><h2>🤖 Asistente IA</h2><span>Análisis con IA · Solo admin</span></div></div>', unsafe_allow_html=True)
-
-        # Contexto financiero del cliente
-        _ing_tot = df_c[df_c["tipo"]=="Ingreso"]["monto"].sum()
-        _gas_tot = df_c[df_c["tipo"]=="Gasto"]["monto"].sum()
-        _util    = _ing_tot - _gas_tot
-        _pend    = df_c["pendiente"].sum()
-        _top_ing = df_c[df_c["tipo"]=="Ingreso"].groupby("categoria")["monto"].sum().sort_values(ascending=False).head(5)
-        _top_gas = df_c[df_c["tipo"]=="Gasto"].groupby("categoria")["monto"].sum().sort_values(ascending=False).head(5)
-        _comprometido = 0.0
-        if "fecha_vencimiento" in df_c.columns:
-            _fv2 = df_c["fecha_vencimiento"].astype(str).str.upper()
-            _comprometido = df_c[(df_c["tipo"]=="Gasto") & ~_fv2.isin(["","NAN","PAGADO"])]["monto"].sum()
-
-        _ctx = (
-            f"CLIENTE: {sel_nombre}\n"
-            f"Ingresos totales: {fmt_ar(_ing_tot)}\n"
-            f"Gastos totales: {fmt_ar(_gas_tot)}\n"
-            f"Utilidad neta: {fmt_ar(_util)} ({(_util/_ing_tot*100):.1f}% margen)\n"
-            f"Pendientes de cobro: {fmt_ar(_pend)}\n"
-            f"Comprometido futuro: {fmt_ar(_comprometido)}\n"
-            f"Top ingresos: {dict(_top_ing)}\n"
-            f"Top gastos: {dict(_top_gas)}"
-        )
-
-        ai_t1, ai_t2, ai_t3 = st.tabs(["💬 Consulta Libre", "📊 Análisis Automático", "📝 Generar Recomendación"])
-
-        with ai_t1:
-            st.markdown(f"""<div style="background:#F0F7FF;border-left:4px solid #1B4F8A;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:0.85rem;">
-            📊 <strong>Contexto:</strong> {sel_nombre} — Ingresos {fmt_ar(_ing_tot)} · Gastos {fmt_ar(_gas_tot)} · Utilidad {fmt_ar(_util)}</div>""", unsafe_allow_html=True)
-            _ck = f"chat_ia_{cliente_mail}"
-            if _ck not in st.session_state:
-                st.session_state[_ck] = []
-            for _m in st.session_state[_ck]:
-                with st.chat_message(_m["role"], avatar="🤖" if _m["role"]=="assistant" else "👤"):
-                    st.markdown(_m["content"])
-            _prompt = st.chat_input("Preguntá sobre este cliente...", key="chat_ia_input")
-            if _prompt:
-                st.session_state[_ck].append({"role":"user","content":_prompt})
-                with st.chat_message("user", avatar="👤"):
-                    st.markdown(_prompt)
-                with st.chat_message("assistant", avatar="🤖"):
-                    with st.spinner("Analizando..."):
-                        try:
-                            import requests as _req
-                            _sys = (
-                                "Sos un asistente financiero experto que trabaja con una contadora argentina. "
-                                "Analizá los datos del cliente y respondé en español argentino, de forma clara y accionable.\n\n"
-                                f"DATOS DEL CLIENTE:\n{_ctx}"
-                            )
-                            _hist = [{"role":_m["role"],"content":_m["content"]} for _m in st.session_state[_ck]]
-                            _r = _req.post("https://api.anthropic.com/v1/messages",
-                                headers={
-                                    "Content-Type": "application/json",
-                                    "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
-                                    "anthropic-version": "2023-06-01"
-                                },
-                                json={"model":"claude-sonnet-4-6","max_tokens":1500,
-                                      "system":_sys,"messages":_hist})
-                            _ans = _r.json()["content"][0]["text"]
-                            st.markdown(_ans)
-                            st.session_state[_ck].append({"role":"assistant","content":_ans})
-                        except Exception as _e:
-                            st.error(f"Error IA: {_e}")
-            if st.session_state.get(_ck):
-                if st.button("🗑️ Limpiar chat", key="clear_chat_ia"):
-                    st.session_state[_ck] = []; st.rerun()
-
-        with ai_t2:
-            st.markdown("#### 📊 Análisis automático")
-            _tipo_a = st.selectbox("Tipo:", ["Salud financiera general",
-                "Gastos reducibles","Oportunidades de ahorro e inversión",
-                "Flujo de caja y liquidez","Alertas de riesgo financiero"])
-            if st.button("🔍 Generar análisis", key="btn_analizar_ia", use_container_width=True):
-                with st.spinner("Analizando..."):
-                    try:
-                        import requests as _req
-                        _p = (f"Realizá un análisis de '{_tipo_a}' para este cliente.\n\n{_ctx}\n\n"
-                              "Estructura: 1) Resumen ejecutivo 2) Hallazgos con números reales "
-                              "3) Alertas 4) Recomendaciones accionables. Usá markdown.")
-                        _r2 = _req.post("https://api.anthropic.com/v1/messages",
-                            headers={
-                                "Content-Type": "application/json",
-                                "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
-                                "anthropic-version": "2023-06-01"
-                            },
-                            json={"model":"claude-sonnet-4-6","max_tokens":2000,
-                                  "messages":[{"role":"user","content":_p}]})
-                        st.markdown(_r2.json()["content"][0]["text"])
-                    except Exception as _e:
-                        st.error(f"Error: {_e}")
-
-        with ai_t3:
-            st.markdown("#### 📝 Generar recomendación para enviar al cliente")
-            rc1, rc2 = st.columns(2)
-            _tema_r = rc1.selectbox("Tema:", ["Reducción de gastos","Estrategia de ahorro",
-                "Inversión en dólar MEP","Inversión en CEDEARs","FCI - Fondo común de inversión",
-                "Gestión de cobros pendientes","Mejora de rentabilidad"])
-            _tono_r = rc2.selectbox("Tono:", ["Profesional y directo","Amigable y motivador","Técnico detallado"])
-            _extra  = st.text_area("Contexto adicional (opcional):", height=70,
-                placeholder="Ej: El cliente quiere ahorrar para fin de año...")
-            if st.button("✨ Generar", use_container_width=True, key="btn_gen_rec"):
-                with st.spinner("Redactando..."):
-                    try:
-                        import requests as _req
-                        _pr = (f"Redactá una recomendación sobre '{_tema_r}' para este cliente.\n\n{_ctx}\n\n"
-                               f"Contexto extra: {_extra or 'Ninguno'}\n"
-                               f"Tono: {_tono_r}\n"
-                               "Dirigite directamente al cliente, en español argentino, 150-250 palabras, sin saludo ni despedida.")
-                        _r3 = _req.post("https://api.anthropic.com/v1/messages",
-                            headers={
-                                "Content-Type": "application/json",
-                                "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
-                                "anthropic-version": "2023-06-01"
-                            },
-                            json={"model":"claude-sonnet-4-6","max_tokens":800,
-                                  "messages":[{"role":"user","content":_pr}]})
-                        _rec = _r3.json()["content"][0]["text"]
-                        st.markdown(f"""<div style="background:white;border-radius:12px;padding:20px;
-                            border-left:5px solid #8E44AD;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-                            {_rec.replace(chr(10),"<br>")}</div>""", unsafe_allow_html=True)
-                        st.session_state[f"rec_pend_{cliente_mail}"] = _rec
-                        st.session_state[f"rec_tema_{cliente_mail}"] = _tema_r
-                        st.success("Recomendación lista. Podés enviarla abajo.")
-                    except Exception as _e:
-                        st.error(f"Error: {_e}")
-            _rec_p = st.session_state.get(f"rec_pend_{cliente_mail}", "")
-            if _rec_p:
-                st.info(f"📬 Recomendación pendiente: **{st.session_state.get(f'rec_tema_{cliente_mail}','')}**")
-                if st.button("📤 Enviar al cliente", key="enviar_rec_ia", use_container_width=True):
-                    try:
-                        _ni = pd.DataFrame([{"email":cliente_mail,
-                            "fecha":date.today().strftime("%d/%m/%Y"),
-                            "instrumento":st.session_state.get(f"rec_tema_{cliente_mail}","Recomendación IA"),
-                            "monto":0,"rentabilidad":0,"mensaje":_rec_p,
-                            "tipo_registro":"recomendacion_admin"}])
-                        write_ws("Inversiones", pd.concat([df_inv_raw,_ni],ignore_index=True))
-                        st.session_state.pop(f"rec_pend_{cliente_mail}",None)
-                        st.session_state.pop(f"rec_tema_{cliente_mail}",None)
-                        st.cache_data.clear(); st.success("Enviada!"); st.rerun()
-                    except Exception as _e:
-                        st.error(f"Error: {_e}")
-
     # INVERSIONES
     # ══════════════════════════════════════════
     elif menu == "📈 Inversiones":
@@ -1838,7 +1654,7 @@ else:
                         st.success("✅ Recomendación enviada"); st.cache_data.clear(); st.session_state.pop('data_cache', None)
             else:
                 if recs.empty:
-                    st.info("📭 Tu contador/a aún no te envió recomendaciones.")
+                    st.info("📭 Tu contadora aún no te envió recomendaciones.")
                 else:
                     for _,r in recs.sort_index(ascending=False).iterrows():
                         with st.expander(f"📊 {r['instrumento']} — {r['fecha']}"):
