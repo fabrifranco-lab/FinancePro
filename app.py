@@ -1001,96 +1001,103 @@ else:
             _cliente_ch_dash   = any(x in _medios_lower_dash for x in ('cheque','e-cheq','echeq'))
 
             def _btn_registrar_pago(pv, key_sfx):
-                """Formulario ancho inline para registrar pago de diferido/cuota."""
-                _nota_pv  = str(pv.get('nota','Sin descripción') or 'Sin descripción')[:50]
-                _med_def  = str(pv.get('medio','')) if str(pv.get('medio','')) in medios else medios[0]
-                _mon_def  = float(pv['monto']) if pd.notna(pv['monto']) else 0.0
+                """Formulario inline para registrar pago — SIN expander (evita anidamiento)."""
+                _nota_pv = str(pv.get('nota','Sin descripcion') or 'Sin descripcion')[:50]
+                _med_def = str(pv.get('medio','')) if str(pv.get('medio','')) in medios else medios[0]
+                _mon_def = float(pv['monto']) if pd.notna(pv['monto']) else 0.0
 
-                with st.expander(f"✅ Confirmar pago: {_nota_pv}", expanded=False):
-                    bp1, bp2, bp3, bp4 = st.columns(4)
-                    med_pago = bp1.selectbox("🏦 Medio:", medios,
+                # Toggle via session_state para mostrar/ocultar sin expander
+                _toggle_key = f"show_pago_{key_sfx}"
+                if st.button(f"💾 Registrar pago", key=f"btn_show_{key_sfx}"):
+                    st.session_state[_toggle_key] = not st.session_state.get(_toggle_key, False)
+
+                if st.session_state.get(_toggle_key, False):
+                    st.markdown(
+                        "<div style='background:#F8FAFF; border:1px solid #BDC3C7; "
+                        "border-radius:10px; padding:12px 16px; margin:6px 0;'>",
+                        unsafe_allow_html=True)
+                    bp1, bp2, bp3 = st.columns(3)
+                    med_pago = bp1.selectbox("Medio:", medios,
                         index=medios.index(_med_def) if _med_def in medios else 0,
                         key=f"med_bp_{key_sfx}")
-                    fec_pago = bp2.date_input("📅 Fecha:", value=date.today(), key=f"fec_bp_{key_sfx}")
-                    mon_pago = bp3.number_input("💵 Monto ($):", value=_mon_def,
+                    fec_pago = bp2.date_input("Fecha:", value=date.today(), key=f"fec_bp_{key_sfx}")
+                    mon_pago = bp3.number_input("Monto ($):", value=_mon_def,
                         min_value=0.0, step=1000.0, key=f"mon_bp_{key_sfx}")
 
-                    es_cheque_pago = med_pago.lower() in ('cheque','e-cheq','echeq')
                     ch_num_bp = ch_banco_bp = ch_venc_bp = ""
+                    es_cheque_pago = med_pago.lower() in ('cheque','e-cheq','echeq')
                     if es_cheque_pago and _cliente_ch_dash:
-                        bp4.markdown("**🏦 Cheque:**")
-                        # Si el movimiento original tenía datos de cheque, prellenar
-                        ch_num_bp   = bp4.text_input("N° cheque",
+                        ck1, ck2, ck3 = st.columns(3)
+                        ch_num_bp   = ck1.text_input("N° cheque",
                             value=str(pv.get('cheque_numero','') or ''),
                             key=f"ch_num_bp_{key_sfx}")
-                        ch_banco_bp = st.text_input("Banco",
+                        ch_banco_bp = ck2.text_input("Banco",
                             value=str(pv.get('cheque_banco','') or ''),
                             key=f"ch_banco_bp_{key_sfx}")
-                        ch_venc_date_bp = st.date_input("📅 Vencimiento cheque",
-                            key=f"ch_venc_bp_{key_sfx}")
-                        ch_venc_bp = ch_venc_date_bp.strftime('%d/%m/%Y')
-                    else:
-                        bp4.empty()
+                        ch_venc_bp  = ck3.date_input("Vencimiento cheque",
+                            key=f"ch_venc_bp_{key_sfx}").strftime('%d/%m/%Y')
 
-                    if st.button(f"💾 Confirmar pago — {fmt_ar(mon_pago)}",
-                                 key=f"btn_bp_{key_sfx}", use_container_width=True):
+                    if st.button(f"✅ Confirmar — {fmt_ar(mon_pago)}",
+                                 key=f"btn_conf_{key_sfx}", use_container_width=True):
                         _df_m = data['movs'].copy()
                         _df_m['monto'] = pd.to_numeric(_df_m['monto'], errors='coerce').fillna(0)
                         _id = str(pv.get('id',''))
                         if _id and 'id' in _df_m.columns:
                             _df_m.loc[_df_m['id'].astype(str)==_id, 'fecha_vencimiento'] = 'PAGADO'
                         _nuevo = pd.DataFrame([{
-                            "id": int(time.time()*100),
-                            "email": cliente_mail,
-                            "fecha": fec_pago.strftime('%d/%m/%Y'),
-                            "tipo": "Gasto",
+                            "id": int(time.time()*100), "email": cliente_mail,
+                            "fecha": fec_pago.strftime('%d/%m/%Y'), "tipo": "Gasto",
                             "categoria": str(pv.get('categoria','') or 'Otro'),
-                            "monto": mon_pago,
-                            "medio": med_pago,
-                            "pendiente": 0,
+                            "monto": mon_pago, "medio": med_pago, "pendiente": 0,
                             "nota": f"PAGO: {str(pv.get('nota','') or '')[:60]}",
-                            "whatsapp_contacto": "",
-                            "fecha_vencimiento": "",
+                            "whatsapp_contacto": "", "fecha_vencimiento": "",
                             "cuotas": "", "cuota_num": "",
-                            "cheque_numero": ch_num_bp,
-                            "cheque_banco": ch_banco_bp,
+                            "cheque_numero": ch_num_bp, "cheque_banco": ch_banco_bp,
                             "cheque_venc": ch_venc_bp,
                             "usuario_log": user['nombre'],
                             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M')
                         }])
                         write_ws("Movimientos", pd.concat([_df_m, _nuevo], ignore_index=True))
-                        st.success("✅ Pago registrado correctamente")
+                        st.session_state[_toggle_key] = False
+                        st.success("Pago registrado!")
                         st.cache_data.clear(); st.session_state.pop('data_cache', None)
                         st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            def _render_alerta_pago(pv, key_sfx, color_izq, prefijo_html):
-                """Renderiza una alerta de pago ocupando todo el ancho disponible."""
-                _nota_show = str(pv.get('nota','') or 'Sin descripción')
-                st.markdown(
-                    f"<div style='background:#FEF9E7; border-left:4px solid {color_izq}; "
-                    f"border-radius:8px; padding:10px 14px; margin:4px 0;'>"
-                    f"{prefijo_html} <strong>{_nota_show}</strong> — "
-                    f"{fmt_ar(pv['monto'])} — "
-                    f"{'Venció' if 'Venció' in prefijo_html or 'vencido' in prefijo_html.lower() else 'Vence'}: "
-                    f"{pv.get('fecha_vencimiento','')} ({_lbl_cuota(pv)})"
-                    f"</div>", unsafe_allow_html=True)
-                _btn_registrar_pago(pv, key_sfx)
-
+            # Alertas SIN expander externo — directo en el dashboard
             if not df_pagos_venc2.empty:
-                with st.expander(f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}", expanded=True):
-                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc2.iterrows()):
-                        _render_alerta_pago(pv, f"v_{_i_pv}", '#E74C3C',
-                            "🔴")
-                        st.markdown("---")
+                st.markdown(
+                    f"<div style='background:#FDEDEC; border-left:4px solid #E74C3C; "
+                    f"border-radius:10px; padding:8px 14px; margin:8px 0; font-weight:700;'>"
+                    f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}</div>",
+                    unsafe_allow_html=True)
+                for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc2.iterrows()):
+                    _nota_show = str(pv.get('nota','') or 'Sin descripcion')
+                    st.markdown(
+                        f"<div class='alerta-pendiente'>🔴 <strong>{_nota_show}</strong> — "
+                        f"{fmt_ar(pv['monto'])} — Venció: {pv.get('fecha_vencimiento','')} "
+                        f"({_lbl_cuota(pv)})</div>", unsafe_allow_html=True)
+                    _btn_registrar_pago(pv, f"v_{_i_pv}")
+                    st.markdown("---")
 
             if not df_pagos_venc.empty:
-                with st.expander(f"⏰ PAGOS PRÓXIMOS A VENCER: {len(df_pagos_venc)}", expanded=True):
-                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc.iterrows()):
-                        dias_r = int((pv['fv_dt'] - hoy_ts).days)
-                        color  = '#E74C3C' if dias_r <= 7 else '#F39C12'
-                        _render_alerta_pago(pv, f"p_{_i_pv}", color,
-                            f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} días</span>")
-                        st.markdown("---")
+                st.markdown(
+                    f"<div style='background:#FEF9E7; border-left:4px solid #F39C12; "
+                    f"border-radius:10px; padding:8px 14px; margin:8px 0; font-weight:700;'>"
+                    f"⏰ PAGOS PROXIMOS A VENCER: {len(df_pagos_venc)}</div>",
+                    unsafe_allow_html=True)
+                for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc.iterrows()):
+                    dias_r = int((pv['fv_dt'] - hoy_ts).days)
+                    color  = '#E74C3C' if dias_r <= 7 else '#F39C12'
+                    _nota_show = str(pv.get('nota','') or 'Sin descripcion')
+                    st.markdown(
+                        f"<div class='alerta-pendiente'>"
+                        f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} dias</span> — "
+                        f"<strong>{_nota_show}</strong> — {fmt_ar(pv['monto'])} — "
+                        f"Vence: {pv.get('fecha_vencimiento','')} ({_lbl_cuota(pv)})"
+                        f"</div>", unsafe_allow_html=True)
+                    _btn_registrar_pago(pv, f"p_{_i_pv}")
+                    st.markdown("---")
 
         st.divider()
 
@@ -1336,7 +1343,7 @@ else:
 
             # ── PASO 3: Medio de pago del PRIMER cobro/pago ──────────
             st.markdown("**🏦 Medio de pago/cobro:**")
-            md_v      = st.selectbox("", medios, key="medio_carga", label_visibility="collapsed")
+            md_v      = st.selectbox("Medio de pago/cobro:", medios, key="medio_carga")
             es_cheque = md_v.lower() in ('cheque','e-cheq','echeq') and cliente_tiene_cheques
 
             # Para gastos con cheque: elegir propio o de tercero
@@ -1936,26 +1943,26 @@ else:
 
         # Admin tiene tab extra para la frase semanal
         if es_admin:
-            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contraseña", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
+            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
         else:
-            tab_pf1, tab_pf2 = st.tabs(["🔒 Contraseña", "📱 Mensaje WhatsApp"])
+            tab_pf1, tab_pf2 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp"])
 
         with tab_pf1:
             col_pf,_ = st.columns([1,2])
             with col_pf:
-                st.markdown("#### 🔒 Cambiar contraseña")
+                st.markdown("#### 🔒 Cambiar contrasena")
                 with st.form("p"):
-                    n1 = st.text_input("Nueva contraseña", type="password")
-                    n2 = st.text_input("Repetir contraseña", type="password")
+                    n1 = st.text_input("Nueva contrasena", type="password")
+                    n2 = st.text_input("Repetir contrasena", type="password")
                     st.markdown("<br>", unsafe_allow_html=True)
-                    if st.form_submit_button("CAMBIAR CONTRASEÑA", use_container_width=True):
+                    if st.form_submit_button("CAMBIAR CONTRASENA", use_container_width=True):
                         if n1!=n2: st.error("No coinciden")
                         elif len(n1)<=3: st.warning("Minimo 4 caracteres")
                         else:
                             df_u = data['users'].copy()
                             df_u.loc[df_u['email']==user['email'],'password'] = n1
                             write_ws("Users", df_u)
-                            st.success("Contraseña actualizada. Reingresa.")
+                            st.success("Contrasena actualizada. Reingrsa.")
                             st.session_state.clear(); st.cache_data.clear(); st.rerun()
 
         with tab_pf2:
