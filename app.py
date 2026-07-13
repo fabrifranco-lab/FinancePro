@@ -10,12 +10,7 @@ from datetime import datetime, date
 import time
 import urllib.parse
 import io
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from fpdf import FPDF
 
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
@@ -585,205 +580,139 @@ else:
 
     # ── HELPER: generar PDF ──
     def generar_pdf(df_periodo, df_todos, cliente_nombre, periodo_str):
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4,
-            rightMargin=1.5*cm, leftMargin=1.5*cm,
-            topMargin=1.5*cm, bottomMargin=1.5*cm)
+        """Genera PDF con fpdf2 — compatible con servidores sin display."""
 
-        # Estilos
-        styles = getSampleStyleSheet()
-        COLOR_PRIMARY  = colors.HexColor('#1B4F8A')
-        COLOR_DARK     = colors.HexColor('#1A252F')
-        COLOR_VERDE    = colors.HexColor('#27AE60')
-        COLOR_ROJO     = colors.HexColor('#E74C3C')
-        COLOR_GRIS     = colors.HexColor('#ECF0F1')
-        COLOR_NARANJA  = colors.HexColor('#F39C12')
+        class PDF(FPDF):
+            def header(self):
+                self.set_font("Helvetica", "B", 14)
+                self.set_text_color(27, 79, 138)
+                self.cell(0, 8, "FinancePRO", ln=False)
+                self.set_font("Helvetica", "", 9)
+                self.set_text_color(127, 140, 141)
+                self.cell(0, 8, f"  |  {cliente_nombre}  |  {periodo_str}", ln=True)
+                self.set_draw_color(27, 79, 138)
+                self.set_line_width(0.5)
+                self.line(10, self.get_y(), 200, self.get_y())
+                self.ln(3)
+            def footer(self):
+                self.set_y(-12)
+                self.set_font("Helvetica", "I", 7)
+                self.set_text_color(149, 165, 166)
+                self.cell(0, 5,
+                    f"FinancePRO v12.2  |  Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Confidencial  |  Pag. {self.page_no()}",
+                    align="C")
 
-        st_titulo = ParagraphStyle('titulo', parent=styles['Title'],
-            fontSize=20, textColor=COLOR_PRIMARY, spaceAfter=4,
-            fontName='Helvetica-Bold')
-        st_subtit = ParagraphStyle('subtit', parent=styles['Normal'],
-            fontSize=10, textColor=colors.HexColor('#7F8C8D'), spaceAfter=2)
-        st_h1 = ParagraphStyle('h1', parent=styles['Heading1'],
-            fontSize=12, textColor=COLOR_PRIMARY, spaceBefore=14, spaceAfter=4,
-            fontName='Helvetica-Bold', borderPad=4)
-        st_body = ParagraphStyle('body', parent=styles['Normal'],
-            fontSize=9, textColor=COLOR_DARK, spaceAfter=3)
-        st_footer = ParagraphStyle('footer', parent=styles['Normal'],
-            fontSize=7, textColor=colors.HexColor('#95A5A6'),
-            alignment=TA_CENTER)
+        def set_color_primary(pdf): pdf.set_text_color(27, 79, 138)
+        def set_color_dark(pdf):    pdf.set_text_color(26, 37, 47)
+        def set_color_gray(pdf):    pdf.set_text_color(127, 140, 141)
+        def set_color_green(pdf):   pdf.set_text_color(39, 174, 96)
+        def set_color_red(pdf):     pdf.set_text_color(231, 76, 60)
 
-        story = []
+        def section_title(pdf, txt):
+            pdf.ln(4)
+            pdf.set_fill_color(27, 79, 138)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 7, f"  {txt}", ln=True, fill=True)
+            pdf.ln(2)
 
-        # ── ENCABEZADO ──
-        story.append(Paragraph("💼 FinancePRO", st_titulo))
-        story.append(Paragraph(f"Reporte Financiero — {cliente_nombre}", st_subtit))
-        story.append(Paragraph(f"Período: {periodo_str}  |  Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}", st_subtit))
-        story.append(HRFlowable(width="100%", thickness=2, color=COLOR_PRIMARY, spaceAfter=10))
+        def tabla(pdf, headers, rows, col_w, align_last="R"):
+            # Header
+            pdf.set_fill_color(236, 240, 241)
+            pdf.set_font("Helvetica", "B", 8)
+            set_color_dark(pdf)
+            for i, (h, w) in enumerate(zip(headers, col_w)):
+                al = align_last if i == len(headers)-1 else "L"
+                pdf.cell(w, 6, h, border=1, align=al, fill=True)
+            pdf.ln()
+            # Rows
+            pdf.set_font("Helvetica", "", 8)
+            for ri, row in enumerate(rows):
+                pdf.set_fill_color(255,255,255) if ri%2==0 else pdf.set_fill_color(248,250,252)
+                for i, (val, w) in enumerate(zip(row, col_w)):
+                    al = align_last if i == len(row)-1 else "L"
+                    pdf.cell(w, 5, str(val)[:45], border=1, align=al, fill=True)
+                pdf.ln()
+            pdf.ln(2)
 
-        # ── MÉTRICAS RESUMEN ──
+        pdf = PDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_margins(10, 15, 10)
+
+        # ── Métricas resumen ──
         ing   = df_periodo[df_periodo['tipo']=='Ingreso']['monto'].sum()
         gas   = df_periodo[df_periodo['tipo']=='Gasto']['monto'].sum()
         util  = ing - gas
         pend  = df_todos['pendiente'].sum()
-        gas_f = df_periodo[(df_periodo['tipo']=='Gasto') & (df_periodo.get('naturaleza', pd.Series(['Variable']*len(df_periodo)))=='Fijo')]['monto'].sum() if 'naturaleza' in df_periodo.columns else 0
+        gas_f = df_periodo[(df_periodo['tipo']=='Gasto') & (df_periodo.get('naturaleza', pd.Series(['V']*len(df_periodo)))=='Fijo')]['monto'].sum() if 'naturaleza' in df_periodo.columns else 0
         gas_v = gas - gas_f
         margen = (util/ing*100) if ing > 0 else 0
 
-        story.append(Paragraph("📊 Resumen del Período", st_h1))
-
-        datos_resumen = [
-            ['Concepto', 'Monto', ''],
-            ['💰 Ingresos Totales',    fmt_ar(ing),    ''],
-            ['💸 Gastos Totales',      fmt_ar(gas),    f'{margen:.1f}% margen'],
-            ['🔒 Gastos Fijos',        fmt_ar(gas_f),  ''],
-            ['📊 Gastos Variables',    fmt_ar(gas_v),  ''],
-            ['📈 Utilidad Neta',       fmt_ar(util),   ''],
-            ['⏳ Pendientes Cobro',    fmt_ar(pend),   ''],
-            ['🏦 Caja Real Estimada',  fmt_ar(util - pend), ''],
+        section_title(pdf, "Resumen del Periodo")
+        metricas = [
+            ("Ingresos Totales",   fmt_ar(ing),  False),
+            ("Gastos Totales",     fmt_ar(gas),  False),
+            ("Gastos Fijos",       fmt_ar(gas_f),False),
+            ("Gastos Variables",   fmt_ar(gas_v),False),
+            (f"Utilidad Neta ({margen:.1f}% margen)", fmt_ar(util), util < 0),
+            ("Pendientes de Cobro",fmt_ar(pend), pend > 0),
+            ("Caja Real Estimada", fmt_ar(util - pend), (util-pend) < 0),
         ]
-        t_resumen = Table(datos_resumen, colWidths=[7*cm, 5*cm, 5*cm])
-        t_resumen.setStyle(TableStyle([
-            ('BACKGROUND',  (0,0), (-1,0),  COLOR_PRIMARY),
-            ('TEXTCOLOR',   (0,0), (-1,0),  colors.white),
-            ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
-            ('FONTSIZE',    (0,0), (-1,-1), 9),
-            ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-            ('TOPPADDING',  (0,0), (-1,-1), 5),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
-            ('LEFTPADDING', (0,0), (-1,-1), 8),
-            # Colores especiales
-            ('TEXTCOLOR',   (1,6), (1,6),   COLOR_VERDE if util >= 0 else COLOR_ROJO),
-            ('FONTNAME',    (0,6), (-1,6),  'Helvetica-Bold'),
-            ('TEXTCOLOR',   (1,7), (1,7),   COLOR_NARANJA),
-        ]))
-        story.append(t_resumen)
-        story.append(Spacer(1, 12))
+        for label, valor, es_alerta in metricas:
+            pdf.set_font("Helvetica", "B", 9)
+            set_color_dark(pdf)
+            pdf.cell(90, 6, f"  {label}", border="LB", fill=False)
+            pdf.set_font("Helvetica", "B", 9)
+            if es_alerta: set_color_red(pdf)
+            else: set_color_green(pdf)
+            pdf.cell(90, 6, valor, border="RB", align="R")
+            pdf.ln()
+        pdf.ln(3)
 
-        # ── INGRESOS POR CATEGORÍA ──
+        # ── Ingresos por categoría ──
         df_ing = df_periodo[df_periodo['tipo']=='Ingreso']
         if not df_ing.empty:
-            story.append(Paragraph("💰 Ingresos por Categoría", st_h1))
+            section_title(pdf, "Ingresos por Categoria")
             gi = df_ing.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
-            datos_ing = [['Categoría', 'Monto', '% Part.']]
-            for _, row in gi.iterrows():
-                pct = row['monto']/ing*100 if ing > 0 else 0
-                datos_ing.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
-            t_ing = Table(datos_ing, colWidths=[8*cm, 5*cm, 4*cm])
-            t_ing.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_PRIMARY),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_ing)
-            story.append(Spacer(1, 12))
+            rows_i = [[r['categoria'], fmt_ar(r['monto']), f"{r['monto']/ing*100:.1f}%"] for _,r in gi.iterrows()]
+            tabla(pdf, ["Categoria","Monto","Part."], rows_i, [100, 60, 30])
 
-        # ── GASTOS POR CATEGORÍA ──
+        # ── Gastos por categoría ──
         df_gas = df_periodo[df_periodo['tipo']=='Gasto']
         if not df_gas.empty:
-            story.append(Paragraph("💸 Gastos por Categoría", st_h1))
+            section_title(pdf, "Gastos por Categoria")
             gg = df_gas.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
-            datos_gas = [['Categoría', 'Monto', '% Part.']]
-            for _, row in gg.iterrows():
-                pct = row['monto']/gas*100 if gas > 0 else 0
-                datos_gas.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
-            t_gas = Table(datos_gas, colWidths=[8*cm, 5*cm, 4*cm])
-            t_gas.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_ROJO),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_gas)
-            story.append(Spacer(1, 12))
+            rows_g = [[r['categoria'], fmt_ar(r['monto']), f"{r['monto']/gas*100:.1f}%" if gas>0 else "0%"] for _,r in gg.iterrows()]
+            tabla(pdf, ["Categoria","Monto","Part."], rows_g, [100, 60, 30])
 
-        # ── PENDIENTES DE COBRO ──
+        # ── Pendientes de cobro ──
         df_pend = df_todos[df_todos['pendiente'] > 0]
         if not df_pend.empty:
-            story.append(Paragraph("⏳ Pendientes de Cobro", st_h1))
-            datos_pend = [['Contacto', 'Fecha', 'Monto Pendiente']]
-            for _, row in df_pend.iterrows():
-                datos_pend.append([
-                    str(row.get('nota',''))[:40],
-                    str(row.get('fecha','')),
-                    fmt_ar(row['pendiente'])
-                ])
-            t_pend = Table(datos_pend, colWidths=[8*cm, 4*cm, 5*cm])
-            t_pend.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_NARANJA),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (2,0), (2,-1),  'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_pend)
-            story.append(Spacer(1, 12))
+            section_title(pdf, "Pendientes de Cobro")
+            rows_p = [[str(r.get('nota',''))[:40], str(r.get('fecha','')), fmt_ar(r['pendiente'])]
+                      for _,r in df_pend.iterrows()]
+            tabla(pdf, ["Contacto","Fecha","Pendiente"], rows_p, [100, 40, 50])
 
-        # ── DETALLE DE MOVIMIENTOS ──
-        story.append(Paragraph("📋 Detalle de Movimientos del Período", st_h1))
-        cols_mov = [c for c in ['fecha','tipo','categoria','nota','monto','medio'] if c in df_periodo.columns]
-        df_mov_show = df_periodo[cols_mov].sort_values('fecha', ascending=False) if 'fecha' in cols_mov else df_periodo[cols_mov]
-        datos_mov = [[c.capitalize() for c in cols_mov]]
-        for _, row in df_mov_show.iterrows():
+        # ── Movimientos del período ──
+        section_title(pdf, "Detalle de Movimientos del Periodo")
+        cols_m = [c for c in ['fecha','tipo','categoria','nota','monto','medio'] if c in df_periodo.columns]
+        df_show = df_periodo[cols_m].sort_values('fecha', ascending=False) if 'fecha' in cols_m else df_periodo[cols_m]
+        rows_m = []
+        for _,r in df_show.iterrows():
             fila = []
-            for c in cols_mov:
-                val = row[c]
-                if c == 'monto':
-                    fila.append(fmt_ar(val))
-                else:
-                    fila.append(str(val)[:35] if pd.notna(val) else '')
-            datos_mov.append(fila)
+            for c in cols_m:
+                v = r[c]
+                fila.append(fmt_ar(v) if c=='monto' else str(v)[:30] if pd.notna(v) else '')
+            rows_m.append(fila)
+        col_w_m = [22, 18, 30, 55, 30, 25][:len(cols_m)]
+        tabla(pdf, [c.capitalize() for c in cols_m], rows_m, col_w_m)
 
-        # Anchos de columna adaptativos
-        col_w = [2.5*cm, 2*cm, 3*cm, 5.5*cm, 3*cm, 2.5*cm][:len(cols_mov)]
-        t_mov = Table(datos_mov, colWidths=col_w, repeatRows=1)
-        t_mov.setStyle(TableStyle([
-            ('BACKGROUND',  (0,0), (-1,0), COLOR_DARK),
-            ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-            ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE',    (0,0), (-1,-1), 7.5),
-            ('ALIGN',       (4,0), (4,-1),  'RIGHT'),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-            ('TOPPADDING',  (0,0), (-1,-1), 3),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 3),
-            ('LEFTPADDING', (0,0), (-1,-1), 5),
-        ]))
-        story.append(t_mov)
-
-        # ── FOOTER ──
-        story.append(Spacer(1, 16))
-        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#BDC3C7')))
-        story.append(Spacer(1, 4))
-        story.append(Paragraph(
-            f"FinancePRO v12.2  |  Reporte generado el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}  |  Confidencial",
-            st_footer))
-
-        doc.build(story)
+        buf = io.BytesIO(pdf.output())
         buf.seek(0)
         return buf
 
-    # ── HELPER: exportar Excel ──
+    # ── HELPER: exportar Excel ──    # ── HELPER: exportar Excel ──
     def generar_excel(df_periodo, df_todos, cliente_nombre, periodo_str):
         """Genera Excel multi-hoja. Intenta xlsxwriter, luego openpyxl, luego CSV zipeado."""
         buf = io.BytesIO()
@@ -2007,9 +1936,9 @@ else:
 
         # Admin tiene tab extra para la frase semanal
         if es_admin:
-            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
+            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contraseña", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
         else:
-            tab_pf1, tab_pf2 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp"])
+            tab_pf1, tab_pf2 = st.tabs(["🔒 Contraseña", "📱 Mensaje WhatsApp"])
 
         with tab_pf1:
             col_pf,_ = st.columns([1,2])
@@ -2017,7 +1946,7 @@ else:
                 st.markdown("#### 🔒 Cambiar contraseña")
                 with st.form("p"):
                     n1 = st.text_input("Nueva contraseña", type="password")
-                    n2 = st.text_input("Repetir contrasena", type="password")
+                    n2 = st.text_input("Repetir contraseña", type="password")
                     st.markdown("<br>", unsafe_allow_html=True)
                     if st.form_submit_button("CAMBIAR CONTRASEÑA", use_container_width=True):
                         if n1!=n2: st.error("No coinciden")
