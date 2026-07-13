@@ -10,38 +10,28 @@ from datetime import datetime, date
 import time
 import urllib.parse
 import io
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-
+from fpdf import FPDF
 
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
 
 def fmt_ar(valor):
-    """Formatea en pesos AR. Sin decimales si el valor es entero."""
+    """Formatea en pesos AR. Siempre sin decimales (los centavos no se usan)."""
     try:
         v = float(valor)
-        if v == int(v):
-            return f"$ {int(v):,}".replace(",",".")
-        return f"$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
-    except: return "$ 0"
+        return "$ " + f"{int(round(v)):,}".replace(",",".")
+    except:
+        return "$ 0"
 
 def fmt_ar_m(valor):
-    """Formato abreviado para métricas: M para millones, K para miles."""
+    """Para métricas: sin decimales, sin abreviaciones. 
+    Solo si supera 100 millones agrega x1000 como referencia."""
     try:
-        v = abs(float(valor))
-        signo = "-" if float(valor) < 0 else ""
-        if v >= 1_000_000:
-            return f"{signo}$ {v/1_000_000:.2f}M".replace(".",",")
-        elif v >= 100_000:
-            return f"{signo}$ {v/1_000:.0f}K".replace(".",",")
-        else:
-            return fmt_ar(valor)
-    except: return "$ 0"
+        v = float(valor)
+        base = "$ " + f"{int(round(v)):,}".replace(",",".")
+        return base
+    except:
+        return "$ 0"
 
 COLORS = {
     "primary":   "#1B4F8A",
@@ -127,23 +117,23 @@ input, select, textarea {{ color:{COLORS['text']} !important; }}
 
 [data-testid="stMetric"] {{
     background:{COLORS['white']} !important;
-    padding:10px 12px !important;
+    padding:8px 10px !important;
     border-radius:12px !important; border:1px solid #D5DBDB !important;
     border-left:5px solid {COLORS['primary']} !important;
     box-shadow:0 2px 8px rgba(0,0,0,0.07) !important;
     transition:transform 0.2s, box-shadow 0.2s !important;
-    overflow:hidden !important;
+    min-width:0 !important;
 }}
 [data-testid="stMetric"]:hover {{ transform:translateY(-2px) !important; box-shadow:0 6px 16px rgba(0,0,0,0.12) !important; }}
 [data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.04em !important; text-transform:uppercase !important; }}
 [data-testid="stMetricValue"] {{
-    font-size:clamp(0.75rem, 1.1vw, 1.05rem) !important;
+    font-size:0.92rem !important;
     color:{COLORS['text']} !important;
     font-weight:700 !important;
-    word-break:break-all !important;
-    overflow-wrap:anywhere !important;
-    white-space:normal !important;
-    line-height:1.2 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    line-height:1.3 !important;
 }}
 
 .stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
@@ -367,6 +357,18 @@ def get_data():
         "inv":    cache.get("Inversiones",  base["inv"]),
     }
 
+def get_frase_semanal(df_config):
+    """Lee la frase semanal desde la hoja Config."""
+    try:
+        if 'frase_semanal' in df_config.columns:
+            _f = df_config['frase_semanal'].dropna()
+            _f = _f[_f.astype(str).str.strip() != '']
+            if not _f.empty:
+                return str(_f.iloc[0]).strip()
+    except Exception:
+        pass
+    return ""  
+
 data = get_data()
 
 if 'logged_in' not in st.session_state:
@@ -578,205 +580,139 @@ else:
 
     # ── HELPER: generar PDF ──
     def generar_pdf(df_periodo, df_todos, cliente_nombre, periodo_str):
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=A4,
-            rightMargin=1.5*cm, leftMargin=1.5*cm,
-            topMargin=1.5*cm, bottomMargin=1.5*cm)
+        """Genera PDF con fpdf2 — compatible con servidores sin display."""
 
-        # Estilos
-        styles = getSampleStyleSheet()
-        COLOR_PRIMARY  = colors.HexColor('#1B4F8A')
-        COLOR_DARK     = colors.HexColor('#1A252F')
-        COLOR_VERDE    = colors.HexColor('#27AE60')
-        COLOR_ROJO     = colors.HexColor('#E74C3C')
-        COLOR_GRIS     = colors.HexColor('#ECF0F1')
-        COLOR_NARANJA  = colors.HexColor('#F39C12')
+        class PDF(FPDF):
+            def header(self):
+                self.set_font("Helvetica", "B", 14)
+                self.set_text_color(27, 79, 138)
+                self.cell(0, 8, "FinancePRO", ln=False)
+                self.set_font("Helvetica", "", 9)
+                self.set_text_color(127, 140, 141)
+                self.cell(0, 8, f"  |  {cliente_nombre}  |  {periodo_str}", ln=True)
+                self.set_draw_color(27, 79, 138)
+                self.set_line_width(0.5)
+                self.line(10, self.get_y(), 200, self.get_y())
+                self.ln(3)
+            def footer(self):
+                self.set_y(-12)
+                self.set_font("Helvetica", "I", 7)
+                self.set_text_color(149, 165, 166)
+                self.cell(0, 5,
+                    f"FinancePRO v12.2  |  Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Confidencial  |  Pag. {self.page_no()}",
+                    align="C")
 
-        st_titulo = ParagraphStyle('titulo', parent=styles['Title'],
-            fontSize=20, textColor=COLOR_PRIMARY, spaceAfter=4,
-            fontName='Helvetica-Bold')
-        st_subtit = ParagraphStyle('subtit', parent=styles['Normal'],
-            fontSize=10, textColor=colors.HexColor('#7F8C8D'), spaceAfter=2)
-        st_h1 = ParagraphStyle('h1', parent=styles['Heading1'],
-            fontSize=12, textColor=COLOR_PRIMARY, spaceBefore=14, spaceAfter=4,
-            fontName='Helvetica-Bold', borderPad=4)
-        st_body = ParagraphStyle('body', parent=styles['Normal'],
-            fontSize=9, textColor=COLOR_DARK, spaceAfter=3)
-        st_footer = ParagraphStyle('footer', parent=styles['Normal'],
-            fontSize=7, textColor=colors.HexColor('#95A5A6'),
-            alignment=TA_CENTER)
+        def set_color_primary(pdf): pdf.set_text_color(27, 79, 138)
+        def set_color_dark(pdf):    pdf.set_text_color(26, 37, 47)
+        def set_color_gray(pdf):    pdf.set_text_color(127, 140, 141)
+        def set_color_green(pdf):   pdf.set_text_color(39, 174, 96)
+        def set_color_red(pdf):     pdf.set_text_color(231, 76, 60)
 
-        story = []
+        def section_title(pdf, txt):
+            pdf.ln(4)
+            pdf.set_fill_color(27, 79, 138)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 7, f"  {txt}", ln=True, fill=True)
+            pdf.ln(2)
 
-        # ── ENCABEZADO ──
-        story.append(Paragraph("💼 FinancePRO", st_titulo))
-        story.append(Paragraph(f"Reporte Financiero — {cliente_nombre}", st_subtit))
-        story.append(Paragraph(f"Período: {periodo_str}  |  Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}", st_subtit))
-        story.append(HRFlowable(width="100%", thickness=2, color=COLOR_PRIMARY, spaceAfter=10))
+        def tabla(pdf, headers, rows, col_w, align_last="R"):
+            # Header
+            pdf.set_fill_color(236, 240, 241)
+            pdf.set_font("Helvetica", "B", 8)
+            set_color_dark(pdf)
+            for i, (h, w) in enumerate(zip(headers, col_w)):
+                al = align_last if i == len(headers)-1 else "L"
+                pdf.cell(w, 6, h, border=1, align=al, fill=True)
+            pdf.ln()
+            # Rows
+            pdf.set_font("Helvetica", "", 8)
+            for ri, row in enumerate(rows):
+                pdf.set_fill_color(255,255,255) if ri%2==0 else pdf.set_fill_color(248,250,252)
+                for i, (val, w) in enumerate(zip(row, col_w)):
+                    al = align_last if i == len(row)-1 else "L"
+                    pdf.cell(w, 5, str(val)[:45], border=1, align=al, fill=True)
+                pdf.ln()
+            pdf.ln(2)
 
-        # ── MÉTRICAS RESUMEN ──
+        pdf = PDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_margins(10, 15, 10)
+
+        # ── Métricas resumen ──
         ing   = df_periodo[df_periodo['tipo']=='Ingreso']['monto'].sum()
         gas   = df_periodo[df_periodo['tipo']=='Gasto']['monto'].sum()
         util  = ing - gas
         pend  = df_todos['pendiente'].sum()
-        gas_f = df_periodo[(df_periodo['tipo']=='Gasto') & (df_periodo.get('naturaleza', pd.Series(['Variable']*len(df_periodo)))=='Fijo')]['monto'].sum() if 'naturaleza' in df_periodo.columns else 0
+        gas_f = df_periodo[(df_periodo['tipo']=='Gasto') & (df_periodo.get('naturaleza', pd.Series(['V']*len(df_periodo)))=='Fijo')]['monto'].sum() if 'naturaleza' in df_periodo.columns else 0
         gas_v = gas - gas_f
         margen = (util/ing*100) if ing > 0 else 0
 
-        story.append(Paragraph("📊 Resumen del Período", st_h1))
-
-        datos_resumen = [
-            ['Concepto', 'Monto', ''],
-            ['💰 Ingresos Totales',    fmt_ar(ing),    ''],
-            ['💸 Gastos Totales',      fmt_ar(gas),    f'{margen:.1f}% margen'],
-            ['🔒 Gastos Fijos',        fmt_ar(gas_f),  ''],
-            ['📊 Gastos Variables',    fmt_ar(gas_v),  ''],
-            ['📈 Utilidad Neta',       fmt_ar(util),   ''],
-            ['⏳ Pendientes Cobro',    fmt_ar(pend),   ''],
-            ['🏦 Caja Real Estimada',  fmt_ar(util - pend), ''],
+        section_title(pdf, "Resumen del Periodo")
+        metricas = [
+            ("Ingresos Totales",   fmt_ar(ing),  False),
+            ("Gastos Totales",     fmt_ar(gas),  False),
+            ("Gastos Fijos",       fmt_ar(gas_f),False),
+            ("Gastos Variables",   fmt_ar(gas_v),False),
+            (f"Utilidad Neta ({margen:.1f}% margen)", fmt_ar(util), util < 0),
+            ("Pendientes de Cobro",fmt_ar(pend), pend > 0),
+            ("Caja Real Estimada", fmt_ar(util - pend), (util-pend) < 0),
         ]
-        t_resumen = Table(datos_resumen, colWidths=[7*cm, 5*cm, 5*cm])
-        t_resumen.setStyle(TableStyle([
-            ('BACKGROUND',  (0,0), (-1,0),  COLOR_PRIMARY),
-            ('TEXTCOLOR',   (0,0), (-1,0),  colors.white),
-            ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
-            ('FONTSIZE',    (0,0), (-1,-1), 9),
-            ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-            ('TOPPADDING',  (0,0), (-1,-1), 5),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
-            ('LEFTPADDING', (0,0), (-1,-1), 8),
-            # Colores especiales
-            ('TEXTCOLOR',   (1,6), (1,6),   COLOR_VERDE if util >= 0 else COLOR_ROJO),
-            ('FONTNAME',    (0,6), (-1,6),  'Helvetica-Bold'),
-            ('TEXTCOLOR',   (1,7), (1,7),   COLOR_NARANJA),
-        ]))
-        story.append(t_resumen)
-        story.append(Spacer(1, 12))
+        for label, valor, es_alerta in metricas:
+            pdf.set_font("Helvetica", "B", 9)
+            set_color_dark(pdf)
+            pdf.cell(90, 6, f"  {label}", border="LB", fill=False)
+            pdf.set_font("Helvetica", "B", 9)
+            if es_alerta: set_color_red(pdf)
+            else: set_color_green(pdf)
+            pdf.cell(90, 6, valor, border="RB", align="R")
+            pdf.ln()
+        pdf.ln(3)
 
-        # ── INGRESOS POR CATEGORÍA ──
+        # ── Ingresos por categoría ──
         df_ing = df_periodo[df_periodo['tipo']=='Ingreso']
         if not df_ing.empty:
-            story.append(Paragraph("💰 Ingresos por Categoría", st_h1))
+            section_title(pdf, "Ingresos por Categoria")
             gi = df_ing.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
-            datos_ing = [['Categoría', 'Monto', '% Part.']]
-            for _, row in gi.iterrows():
-                pct = row['monto']/ing*100 if ing > 0 else 0
-                datos_ing.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
-            t_ing = Table(datos_ing, colWidths=[8*cm, 5*cm, 4*cm])
-            t_ing.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_PRIMARY),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_ing)
-            story.append(Spacer(1, 12))
+            rows_i = [[r['categoria'], fmt_ar(r['monto']), f"{r['monto']/ing*100:.1f}%"] for _,r in gi.iterrows()]
+            tabla(pdf, ["Categoria","Monto","Part."], rows_i, [100, 60, 30])
 
-        # ── GASTOS POR CATEGORÍA ──
+        # ── Gastos por categoría ──
         df_gas = df_periodo[df_periodo['tipo']=='Gasto']
         if not df_gas.empty:
-            story.append(Paragraph("💸 Gastos por Categoría", st_h1))
+            section_title(pdf, "Gastos por Categoria")
             gg = df_gas.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
-            datos_gas = [['Categoría', 'Monto', '% Part.']]
-            for _, row in gg.iterrows():
-                pct = row['monto']/gas*100 if gas > 0 else 0
-                datos_gas.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
-            t_gas = Table(datos_gas, colWidths=[8*cm, 5*cm, 4*cm])
-            t_gas.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_ROJO),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_gas)
-            story.append(Spacer(1, 12))
+            rows_g = [[r['categoria'], fmt_ar(r['monto']), f"{r['monto']/gas*100:.1f}%" if gas>0 else "0%"] for _,r in gg.iterrows()]
+            tabla(pdf, ["Categoria","Monto","Part."], rows_g, [100, 60, 30])
 
-        # ── PENDIENTES DE COBRO ──
+        # ── Pendientes de cobro ──
         df_pend = df_todos[df_todos['pendiente'] > 0]
         if not df_pend.empty:
-            story.append(Paragraph("⏳ Pendientes de Cobro", st_h1))
-            datos_pend = [['Contacto', 'Fecha', 'Monto Pendiente']]
-            for _, row in df_pend.iterrows():
-                datos_pend.append([
-                    str(row.get('nota',''))[:40],
-                    str(row.get('fecha','')),
-                    fmt_ar(row['pendiente'])
-                ])
-            t_pend = Table(datos_pend, colWidths=[8*cm, 4*cm, 5*cm])
-            t_pend.setStyle(TableStyle([
-                ('BACKGROUND',  (0,0), (-1,0), COLOR_NARANJA),
-                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                ('FONTSIZE',    (0,0), (-1,-1), 9),
-                ('ALIGN',       (2,0), (2,-1),  'RIGHT'),
-                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-                ('TOPPADDING',  (0,0), (-1,-1), 4),
-                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
-                ('LEFTPADDING', (0,0), (-1,-1), 8),
-            ]))
-            story.append(t_pend)
-            story.append(Spacer(1, 12))
+            section_title(pdf, "Pendientes de Cobro")
+            rows_p = [[str(r.get('nota',''))[:40], str(r.get('fecha','')), fmt_ar(r['pendiente'])]
+                      for _,r in df_pend.iterrows()]
+            tabla(pdf, ["Contacto","Fecha","Pendiente"], rows_p, [100, 40, 50])
 
-        # ── DETALLE DE MOVIMIENTOS ──
-        story.append(Paragraph("📋 Detalle de Movimientos del Período", st_h1))
-        cols_mov = [c for c in ['fecha','tipo','categoria','nota','monto','medio'] if c in df_periodo.columns]
-        df_mov_show = df_periodo[cols_mov].sort_values('fecha', ascending=False) if 'fecha' in cols_mov else df_periodo[cols_mov]
-        datos_mov = [[c.capitalize() for c in cols_mov]]
-        for _, row in df_mov_show.iterrows():
+        # ── Movimientos del período ──
+        section_title(pdf, "Detalle de Movimientos del Periodo")
+        cols_m = [c for c in ['fecha','tipo','categoria','nota','monto','medio'] if c in df_periodo.columns]
+        df_show = df_periodo[cols_m].sort_values('fecha', ascending=False) if 'fecha' in cols_m else df_periodo[cols_m]
+        rows_m = []
+        for _,r in df_show.iterrows():
             fila = []
-            for c in cols_mov:
-                val = row[c]
-                if c == 'monto':
-                    fila.append(fmt_ar(val))
-                else:
-                    fila.append(str(val)[:35] if pd.notna(val) else '')
-            datos_mov.append(fila)
+            for c in cols_m:
+                v = r[c]
+                fila.append(fmt_ar(v) if c=='monto' else str(v)[:30] if pd.notna(v) else '')
+            rows_m.append(fila)
+        col_w_m = [22, 18, 30, 55, 30, 25][:len(cols_m)]
+        tabla(pdf, [c.capitalize() for c in cols_m], rows_m, col_w_m)
 
-        # Anchos de columna adaptativos
-        col_w = [2.5*cm, 2*cm, 3*cm, 5.5*cm, 3*cm, 2.5*cm][:len(cols_mov)]
-        t_mov = Table(datos_mov, colWidths=col_w, repeatRows=1)
-        t_mov.setStyle(TableStyle([
-            ('BACKGROUND',  (0,0), (-1,0), COLOR_DARK),
-            ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
-            ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE',    (0,0), (-1,-1), 7.5),
-            ('ALIGN',       (4,0), (4,-1),  'RIGHT'),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
-            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
-            ('TOPPADDING',  (0,0), (-1,-1), 3),
-            ('BOTTOMPADDING',(0,0),(-1,-1), 3),
-            ('LEFTPADDING', (0,0), (-1,-1), 5),
-        ]))
-        story.append(t_mov)
-
-        # ── FOOTER ──
-        story.append(Spacer(1, 16))
-        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#BDC3C7')))
-        story.append(Spacer(1, 4))
-        story.append(Paragraph(
-            f"FinancePRO v12.2  |  Reporte generado el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}  |  Confidencial",
-            st_footer))
-
-        doc.build(story)
+        buf = io.BytesIO(pdf.output())
         buf.seek(0)
         return buf
 
-    # ── HELPER: exportar Excel ──
+    # ── HELPER: exportar Excel ──    # ── HELPER: exportar Excel ──
     def generar_excel(df_periodo, df_todos, cliente_nombre, periodo_str):
         """Genera Excel multi-hoja. Intenta xlsxwriter, luego openpyxl, luego CSV zipeado."""
         buf = io.BytesIO()
@@ -898,6 +834,56 @@ else:
         per_str = f"{rango[0].strftime('%d/%m/%Y')} – {rango[1].strftime('%d/%m/%Y')}" if isinstance(rango,(list,tuple)) else ""
         st.markdown(f'<div class="page-header"><div><h2>📊 Dashboard Financiero</h2><span>{sel_nombre} · {per_str}</span></div></div>', unsafe_allow_html=True)
 
+        # ── FRASE SEMANAL ──
+        _frase = get_frase_semanal(df_config)
+        if _frase and not es_admin:
+            # Popup (solo 1 vez por sesión)
+            _popup_key = f"frase_vista_{user['email']}"
+            if not st.session_state.get(_popup_key, False):
+                st.session_state[_popup_key] = True
+                # Mostrar como diálogo visual con st.empty y JS
+                _popup_placeholder = st.empty()
+                _popup_placeholder.markdown(f"""
+                <div id="frase-popup" onclick="this.style.display='none'"
+                     style='position:fixed; top:0; left:0; width:100%; height:100%;
+                            background:rgba(0,0,0,0.6); z-index:99999;
+                            display:flex; align-items:center; justify-content:center;
+                            cursor:pointer;'>
+                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:20px; padding:40px 36px; max-width:480px;
+                                text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+                                animation:fadeIn 0.4s ease;'>
+                        <div style='font-size:2.5rem; margin-bottom:12px;'>✨</div>
+                        <p style='color:white; font-size:1.05rem; font-style:italic;
+                                  line-height:1.7; margin:0; white-space:pre-line;'>{_frase}</p>
+                        <p style='color:#BDC3C7; font-size:0.78rem; margin:20px 0 0 0;'>
+                            Tocá en cualquier lugar para continuar</p>
+                    </div>
+                </div>
+                <style>
+                @keyframes fadeIn {{ from {{ opacity:0; transform:scale(0.95); }}
+                                     to   {{ opacity:1; transform:scale(1); }} }}
+                </style>
+                """, unsafe_allow_html=True)
+
+            # Banner fijo en el dashboard (siempre visible)
+            _lineas_frase = _frase.split('\n')
+            _texto_banner = _lineas_frase[0] if _lineas_frase else _frase
+            _autor_banner = _lineas_frase[-1] if len(_lineas_frase) > 1 else ""
+            st.markdown(f"""
+            <div style='background:linear-gradient(135deg,#1B4F8A11,#2980B911);
+                        border-left:4px solid #1B4F8A; border-radius:10px;
+                        padding:10px 16px; margin-bottom:14px;
+                        display:flex; align-items:center; gap:12px;'>
+                <span style='font-size:1.4rem;'>✨</span>
+                <div>
+                    <p style='margin:0; font-style:italic; color:#1B4F8A;
+                               font-size:0.88rem;'>{_texto_banner}</p>
+                    {f"<p style='margin:2px 0 0 0; font-size:0.75rem; color:#7F8C8D;'>{_autor_banner}</p>" if _autor_banner else ""}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
         # Métricas fila 1
         m1,m2,m3,m4,m5 = st.columns(5)
         m1.metric("💰 INGRESOS",    fmt_ar_m(ing))
@@ -1015,96 +1001,103 @@ else:
             _cliente_ch_dash   = any(x in _medios_lower_dash for x in ('cheque','e-cheq','echeq'))
 
             def _btn_registrar_pago(pv, key_sfx):
-                """Formulario ancho inline para registrar pago de diferido/cuota."""
-                _nota_pv  = str(pv.get('nota','Sin descripción') or 'Sin descripción')[:50]
-                _med_def  = str(pv.get('medio','')) if str(pv.get('medio','')) in medios else medios[0]
-                _mon_def  = float(pv['monto']) if pd.notna(pv['monto']) else 0.0
+                """Formulario inline para registrar pago — SIN expander (evita anidamiento)."""
+                _nota_pv = str(pv.get('nota','Sin descripcion') or 'Sin descripcion')[:50]
+                _med_def = str(pv.get('medio','')) if str(pv.get('medio','')) in medios else medios[0]
+                _mon_def = float(pv['monto']) if pd.notna(pv['monto']) else 0.0
 
-                with st.expander(f"✅ Confirmar pago: {_nota_pv}", expanded=False):
-                    bp1, bp2, bp3, bp4 = st.columns(4)
-                    med_pago = bp1.selectbox("🏦 Medio:", medios,
+                # Toggle via session_state para mostrar/ocultar sin expander
+                _toggle_key = f"show_pago_{key_sfx}"
+                if st.button(f"💾 Registrar pago", key=f"btn_show_{key_sfx}"):
+                    st.session_state[_toggle_key] = not st.session_state.get(_toggle_key, False)
+
+                if st.session_state.get(_toggle_key, False):
+                    st.markdown(
+                        "<div style='background:#F8FAFF; border:1px solid #BDC3C7; "
+                        "border-radius:10px; padding:12px 16px; margin:6px 0;'>",
+                        unsafe_allow_html=True)
+                    bp1, bp2, bp3 = st.columns(3)
+                    med_pago = bp1.selectbox("Medio:", medios,
                         index=medios.index(_med_def) if _med_def in medios else 0,
                         key=f"med_bp_{key_sfx}")
-                    fec_pago = bp2.date_input("📅 Fecha:", value=date.today(), key=f"fec_bp_{key_sfx}")
-                    mon_pago = bp3.number_input("💵 Monto ($):", value=_mon_def,
+                    fec_pago = bp2.date_input("Fecha:", value=date.today(), key=f"fec_bp_{key_sfx}")
+                    mon_pago = bp3.number_input("Monto ($):", value=_mon_def,
                         min_value=0.0, step=1000.0, key=f"mon_bp_{key_sfx}")
 
-                    es_cheque_pago = med_pago.lower() in ('cheque','e-cheq','echeq')
                     ch_num_bp = ch_banco_bp = ch_venc_bp = ""
+                    es_cheque_pago = med_pago.lower() in ('cheque','e-cheq','echeq')
                     if es_cheque_pago and _cliente_ch_dash:
-                        bp4.markdown("**🏦 Cheque:**")
-                        # Si el movimiento original tenía datos de cheque, prellenar
-                        ch_num_bp   = bp4.text_input("N° cheque",
+                        ck1, ck2, ck3 = st.columns(3)
+                        ch_num_bp   = ck1.text_input("N° cheque",
                             value=str(pv.get('cheque_numero','') or ''),
                             key=f"ch_num_bp_{key_sfx}")
-                        ch_banco_bp = st.text_input("Banco",
+                        ch_banco_bp = ck2.text_input("Banco",
                             value=str(pv.get('cheque_banco','') or ''),
                             key=f"ch_banco_bp_{key_sfx}")
-                        ch_venc_date_bp = st.date_input("📅 Vencimiento cheque",
-                            key=f"ch_venc_bp_{key_sfx}")
-                        ch_venc_bp = ch_venc_date_bp.strftime('%d/%m/%Y')
-                    else:
-                        bp4.empty()
+                        ch_venc_bp  = ck3.date_input("Vencimiento cheque",
+                            key=f"ch_venc_bp_{key_sfx}").strftime('%d/%m/%Y')
 
-                    if st.button(f"💾 Confirmar pago — {fmt_ar(mon_pago)}",
-                                 key=f"btn_bp_{key_sfx}", use_container_width=True):
+                    if st.button(f"✅ Confirmar — {fmt_ar(mon_pago)}",
+                                 key=f"btn_conf_{key_sfx}", use_container_width=True):
                         _df_m = data['movs'].copy()
                         _df_m['monto'] = pd.to_numeric(_df_m['monto'], errors='coerce').fillna(0)
                         _id = str(pv.get('id',''))
                         if _id and 'id' in _df_m.columns:
                             _df_m.loc[_df_m['id'].astype(str)==_id, 'fecha_vencimiento'] = 'PAGADO'
                         _nuevo = pd.DataFrame([{
-                            "id": int(time.time()*100),
-                            "email": cliente_mail,
-                            "fecha": fec_pago.strftime('%d/%m/%Y'),
-                            "tipo": "Gasto",
+                            "id": int(time.time()*100), "email": cliente_mail,
+                            "fecha": fec_pago.strftime('%d/%m/%Y'), "tipo": "Gasto",
                             "categoria": str(pv.get('categoria','') or 'Otro'),
-                            "monto": mon_pago,
-                            "medio": med_pago,
-                            "pendiente": 0,
+                            "monto": mon_pago, "medio": med_pago, "pendiente": 0,
                             "nota": f"PAGO: {str(pv.get('nota','') or '')[:60]}",
-                            "whatsapp_contacto": "",
-                            "fecha_vencimiento": "",
+                            "whatsapp_contacto": "", "fecha_vencimiento": "",
                             "cuotas": "", "cuota_num": "",
-                            "cheque_numero": ch_num_bp,
-                            "cheque_banco": ch_banco_bp,
+                            "cheque_numero": ch_num_bp, "cheque_banco": ch_banco_bp,
                             "cheque_venc": ch_venc_bp,
                             "usuario_log": user['nombre'],
                             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M')
                         }])
                         write_ws("Movimientos", pd.concat([_df_m, _nuevo], ignore_index=True))
-                        st.success("✅ Pago registrado correctamente")
+                        st.session_state[_toggle_key] = False
+                        st.success("Pago registrado!")
                         st.cache_data.clear(); st.session_state.pop('data_cache', None)
                         st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-            def _render_alerta_pago(pv, key_sfx, color_izq, prefijo_html):
-                """Renderiza una alerta de pago ocupando todo el ancho disponible."""
-                _nota_show = str(pv.get('nota','') or 'Sin descripción')
-                st.markdown(
-                    f"<div style='background:#FEF9E7; border-left:4px solid {color_izq}; "
-                    f"border-radius:8px; padding:10px 14px; margin:4px 0;'>"
-                    f"{prefijo_html} <strong>{_nota_show}</strong> — "
-                    f"{fmt_ar(pv['monto'])} — "
-                    f"{'Venció' if 'Venció' in prefijo_html or 'vencido' in prefijo_html.lower() else 'Vence'}: "
-                    f"{pv.get('fecha_vencimiento','')} ({_lbl_cuota(pv)})"
-                    f"</div>", unsafe_allow_html=True)
-                _btn_registrar_pago(pv, key_sfx)
-
+            # Alertas SIN expander externo — directo en el dashboard
             if not df_pagos_venc2.empty:
-                with st.expander(f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}", expanded=True):
-                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc2.iterrows()):
-                        _render_alerta_pago(pv, f"v_{_i_pv}", '#E74C3C',
-                            "🔴")
-                        st.markdown("---")
+                st.markdown(
+                    f"<div style='background:#FDEDEC; border-left:4px solid #E74C3C; "
+                    f"border-radius:10px; padding:8px 14px; margin:8px 0; font-weight:700;'>"
+                    f"🚨 PAGOS VENCIDOS SIN REALIZAR: {len(df_pagos_venc2)}</div>",
+                    unsafe_allow_html=True)
+                for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc2.iterrows()):
+                    _nota_show = str(pv.get('nota','') or 'Sin descripcion')
+                    st.markdown(
+                        f"<div class='alerta-pendiente'>🔴 <strong>{_nota_show}</strong> — "
+                        f"{fmt_ar(pv['monto'])} — Venció: {pv.get('fecha_vencimiento','')} "
+                        f"({_lbl_cuota(pv)})</div>", unsafe_allow_html=True)
+                    _btn_registrar_pago(pv, f"v_{_i_pv}")
+                    st.markdown("---")
 
             if not df_pagos_venc.empty:
-                with st.expander(f"⏰ PAGOS PRÓXIMOS A VENCER: {len(df_pagos_venc)}", expanded=True):
-                    for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc.iterrows()):
-                        dias_r = int((pv['fv_dt'] - hoy_ts).days)
-                        color  = '#E74C3C' if dias_r <= 7 else '#F39C12'
-                        _render_alerta_pago(pv, f"p_{_i_pv}", color,
-                            f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} días</span>")
-                        st.markdown("---")
+                st.markdown(
+                    f"<div style='background:#FEF9E7; border-left:4px solid #F39C12; "
+                    f"border-radius:10px; padding:8px 14px; margin:8px 0; font-weight:700;'>"
+                    f"⏰ PAGOS PROXIMOS A VENCER: {len(df_pagos_venc)}</div>",
+                    unsafe_allow_html=True)
+                for _i_pv, (idx_pv, pv) in enumerate(df_pagos_venc.iterrows()):
+                    dias_r = int((pv['fv_dt'] - hoy_ts).days)
+                    color  = '#E74C3C' if dias_r <= 7 else '#F39C12'
+                    _nota_show = str(pv.get('nota','') or 'Sin descripcion')
+                    st.markdown(
+                        f"<div class='alerta-pendiente'>"
+                        f"<span style='color:{color};font-weight:700;'>⏰ {dias_r} dias</span> — "
+                        f"<strong>{_nota_show}</strong> — {fmt_ar(pv['monto'])} — "
+                        f"Vence: {pv.get('fecha_vencimiento','')} ({_lbl_cuota(pv)})"
+                        f"</div>", unsafe_allow_html=True)
+                    _btn_registrar_pago(pv, f"p_{_i_pv}")
+                    st.markdown("---")
 
         st.divider()
 
@@ -1350,7 +1343,7 @@ else:
 
             # ── PASO 3: Medio de pago del PRIMER cobro/pago ──────────
             st.markdown("**🏦 Medio de pago/cobro:**")
-            md_v      = st.selectbox("", medios, key="medio_carga", label_visibility="collapsed")
+            md_v      = st.selectbox("Medio de pago/cobro:", medios, key="medio_carga")
             es_cheque = md_v.lower() in ('cheque','e-cheq','echeq') and cliente_tiene_cheques
 
             # Para gastos con cheque: elegir propio o de tercero
@@ -1372,19 +1365,37 @@ else:
                         ch_sel = opciones_ch[sel_ch_key]
                         st.success(f"Cheque N°{ch_sel.get('numero','')} — {ch_sel.get('banco','')} — {fmt_ar(ch_sel.get('monto',0))}")
 
-            # ── PASO 4: ¿Cobro con 2 medios? (solo Ingreso) ──────────
-            if tp_v == "Ingreso":
-                st.checkbox("💰 Cobro con 2 medios de pago", key="pago_mixto_cb")
+            # ── PASO 4: ¿2 medios de pago/cobro? (Ingreso Y Gasto) ──
+            _lbl_2medios = "💰 Cobro con 2 medios de pago" if tp_v == "Ingreso" else "💳 Pago con 2 medios"
+            st.checkbox(_lbl_2medios, key="pago_mixto_cb")
+            _pago_mixto = st.session_state.get('pago_mixto_cb', False)
 
-            _pago_mixto = tp_v == "Ingreso" and st.session_state.get('pago_mixto_cb', False)
-
-            # Medio del 2° cobro (reactivo, fuera del form)
+            # Medio del 2° cobro/pago (reactivo, fuera del form)
             _med2 = ""
             _es_cheque_m2 = False
             if _pago_mixto:
+                _lbl_med2 = "🏦 2° Medio de cobro:" if tp_v == "Ingreso" else "🏦 2° Medio de pago:"
                 _medio2_lista = [m for m in medios if m != md_v]
-                _med2 = st.selectbox("🏦 2° Medio de cobro:", _medio2_lista, key="medio2_outer")
+                _med2 = st.selectbox(_lbl_med2, _medio2_lista, key="medio2_outer")
                 _es_cheque_m2 = _med2.lower() in ('cheque','e-cheq','echeq') and cliente_tiene_cheques
+                # Para Gasto con 2° medio cheque: tipo de cheque del 2° pago
+                _tipo_ch2 = "Cheque propio"
+                _ch2_sel  = None
+                if _es_cheque_m2 and tp_v == "Gasto":
+                    _tipo_ch2 = st.radio("Tipo de cheque (2° pago):",
+                        ["Cheque propio","Cheque de tercero (de mi banco)"],
+                        horizontal=True, key="tipo_ch2_g")
+                    if _tipo_ch2 == "Cheque de tercero (de mi banco)":
+                        if df_ch_disponibles.empty:
+                            st.warning("No tenés cheques de terceros disponibles.")
+                        else:
+                            _ops_ch2 = {
+                                f"N°{r['numero']} | {r.get('banco','')} | {fmt_ar(r['monto'])}": r
+                                for _,r in df_ch_disponibles.iterrows()
+                            }
+                            _sel_ch2_key = st.selectbox("Elegí el cheque (2° pago):", list(_ops_ch2.keys()), key="sel_ch2_terc")
+                            _ch2_sel = _ops_ch2[_sel_ch2_key]
+                            st.success(f"Cheque N°{_ch2_sel.get('numero','')} — {fmt_ar(_ch2_sel.get('monto',0))}")
 
             st.markdown("---")
 
@@ -1395,7 +1406,8 @@ else:
 
                 # ── BLOQUE 1: datos del primer cobro/pago ────────────
                 if _pago_mixto:
-                    st.markdown(f"#### 📋 1° Cobro — {md_v}")
+                    _lbl_b1 = f"#### 📋 1° Cobro — {md_v}" if tp_v == "Ingreso" else f"#### 📋 1° Pago — {md_v}"
+                    st.markdown(_lbl_b1)
                 else:
                     st.markdown("#### 📋 Datos del movimiento")
 
@@ -1467,20 +1479,27 @@ else:
                             key="fecha_parcial_field").strftime('%d/%m/%Y')
                         pp3.metric("Resto diferido", fmt_ar(max(0, mon_v - monto_parcial_v)))
 
-                # ── BLOQUE 2: 2° cobro (solo si pago mixto activo) ───
+                # ── BLOQUE 2: 2° cobro/pago (si pago mixto activo) ──
                 mon2_v      = 0.0
                 ch2_num_v   = ch2_banco_v = ch2_lib_v = ch2_venc_v = ""
 
                 if _pago_mixto:
                     st.markdown("---")
-                    st.markdown(f"#### 📋 2° Cobro — {_med2}")
-                    mon2_v = st.number_input("💵 Monto 2° cobro ($)", min_value=0.0, step=1000.0, key="mon2_field")
+                    _lbl_b2 = f"#### 📋 2° Cobro — {_med2}" if tp_v == "Ingreso" else f"#### 📋 2° Pago — {_med2}"
+                    st.markdown(_lbl_b2)
+                    _lbl_mon2 = "💵 Monto 2° cobro ($)" if tp_v == "Ingreso" else "💵 Monto 2° pago ($)"
+                    mon2_v = st.number_input(_lbl_mon2, min_value=0.0, step=1000.0, key="mon2_field")
                     if _es_cheque_m2:
-                        st.markdown("**🏦 Datos del cheque recibido (2° cobro):**")
+                        _lbl_ch2 = "**🏦 Datos del cheque recibido (2° cobro):**" if tp_v == "Ingreso" else "**🏦 Datos del cheque (2° pago):**"
+                        st.markdown(_lbl_ch2)
                         ch2k1,ch2k2,ch2k3,ch2k4 = st.columns(4)
-                        ch2_num_v   = ch2k1.text_input("N° cheque (2°)",  key="ch2_num_f")
-                        ch2_banco_v = ch2k2.text_input("Banco (2°)",      key="ch2_banco_f")
-                        ch2_lib_v   = ch2k3.text_input("Librador (2°)",   key="ch2_lib_f")
+                        # Si es cheque de tercero en Gasto y ya se seleccionó, prellenar
+                        _ch2_num_pre  = str(_ch2_sel.get('numero','')) if _ch2_sel else ""
+                        _ch2_banco_pre= str(_ch2_sel.get('banco',''))  if _ch2_sel else ""
+                        _ch2_lib_pre  = str(_ch2_sel.get('librador','')) if _ch2_sel else ""
+                        ch2_num_v   = ch2k1.text_input("N° cheque (2°)",  value=_ch2_num_pre,  key="ch2_num_f")
+                        ch2_banco_v = ch2k2.text_input("Banco (2°)",      value=_ch2_banco_pre, key="ch2_banco_f")
+                        ch2_lib_v   = ch2k3.text_input("Librador (2°)",   value=_ch2_lib_pre,  key="ch2_lib_f")
                         ch2_venc_v  = ch2k4.date_input("📅 Vencimiento (2°)", key="ch2_venc_f").strftime('%d/%m/%Y')
 
                 # ── GUARDAR ──────────────────────────────────────────
@@ -1545,9 +1564,10 @@ else:
 
                         df_concat = pd.concat([df_movs_raw, nueva], ignore_index=True)
 
-                        # 2° cobro (pago mixto)
-                        if _pago_mixto and _med2:
-                            _nota2 = f"{nt_v} [2° cobro: {_med2}]"
+                        # 2° cobro/pago (pago mixto)
+                        if _pago_mixto and _med2 and mon2_v > 0:
+                            _sufijo2 = "2° cobro" if tp_v == "Ingreso" else "2° pago"
+                            _nota2 = f"{nt_v} [{_sufijo2}: {_med2}]"
                             if ch2_num_v:
                                 _nota2 = f"{_nota2} [Ch N°{ch2_num_v} {ch2_banco_v} vto:{ch2_venc_v}]"
                             nueva2 = pd.DataFrame([{
@@ -1555,7 +1575,8 @@ else:
                                 "fecha": f_v.strftime('%d/%m/%Y'), "tipo": tp_v,
                                 "categoria": cat_v, "monto": mon2_v, "medio": _med2,
                                 "pendiente": 0, "nota": _nota2,
-                                "whatsapp_contacto": wa_v, "fecha_vencimiento": "",
+                                "whatsapp_contacto": wa_v if tp_v == "Ingreso" else "",
+                                "fecha_vencimiento": "",
                                 "cuotas":"","cuota_num":"",
                                 "cheque_numero": ch2_num_v, "cheque_banco": ch2_banco_v,
                                 "cheque_venc": ch2_venc_v,
@@ -1834,3 +1855,224 @@ else:
                 mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
 
     # ══════════════════════════════════════════
+    # ══════════════════════════════════════════
+    # INVERSIONES
+    # ══════════════════════════════════════════
+    elif menu == "📈 Inversiones":
+        st.markdown(f'<div class="page-header"><div><h2>📈 Inversiones</h2><span>{sel_nombre}</span></div></div>', unsafe_allow_html=True)
+        mis_inv = df_inv_raw[df_inv_raw['email']==cliente_mail].copy() if not df_inv_raw.empty else pd.DataFrame()
+        if not mis_inv.empty:
+            if 'monto' in mis_inv.columns:
+                mis_inv['monto'] = pd.to_numeric(mis_inv['monto'],errors='coerce').fillna(0)
+            if 'rentabilidad' not in mis_inv.columns: mis_inv['rentabilidad'] = 0
+            if 'tipo_registro' not in mis_inv.columns: mis_inv['tipo_registro'] = 'recomendacion_admin'
+        regs = mis_inv[mis_inv['tipo_registro']=='registro_cliente'] if not mis_inv.empty else pd.DataFrame()
+        recs = mis_inv[mis_inv['tipo_registro']=='recomendacion_admin'] if not mis_inv.empty else pd.DataFrame()
+        tot_inv = regs['monto'].sum() if not regs.empty and 'monto' in regs.columns else 0
+        if tot_inv > 0:
+            mi1,mi2,mi3,_ = st.columns(4)
+            mi1.metric("📦 TOTAL INVERTIDO", fmt_ar(tot_inv))
+            if not regs.empty and 'rentabilidad' in regs.columns:
+                _rv = pd.to_numeric(regs['rentabilidad'],errors='coerce').dropna()
+                mi2.metric("📈 RENT. PROM.", f"{_rv.mean():.1f}%" if not _rv.empty else "N/A")
+            mi3.metric("🔢 POSICIONES", str(len(regs)))
+        tabs_inv = st.tabs(["📝 Mis Registros","💡 Recomendaciones"] if not es_admin
+                           else ["📝 Registros Cliente","💡 Enviar Recomendación","📊 Resumen Admin"])
+        with tabs_inv[0]:
+            if not es_admin:
+                st.markdown("#### ➕ Registrar inversión")
+                with st.form("reg_inv"):
+                    ri1,ri2,ri3 = st.columns(3)
+                    ins_r  = ri1.selectbox("📊 Instrumento",["Bonos","Acciones","CEDEARs","FCI","Dólar MEP","Cripto","Plazo Fijo","Otro"])
+                    mon_r  = ri2.number_input("💵 Monto ($)",min_value=0.0,step=1000.0)
+                    rent_r = ri3.number_input("📈 Rentabilidad (%)",min_value=-100.0,max_value=1000.0,step=0.1)
+                    nota_r = st.text_input("📝 Nombre del fondo / detalle")
+                    if st.form_submit_button("💾 REGISTRAR",use_container_width=True):
+                        ni = pd.DataFrame([{"email":cliente_mail,"fecha":date.today().strftime('%d/%m/%Y'),
+                            "instrumento":ins_r,"monto":mon_r,"rentabilidad":rent_r,
+                            "mensaje":nota_r,"tipo_registro":"registro_cliente"}])
+                        write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
+                        st.success("✅ Inversión registrada"); st.cache_data.clear(); st.rerun()
+            if regs.empty:
+                st.info("📭 Sin inversiones registradas.")
+            else:
+                for _,r in regs.sort_index(ascending=False).iterrows():
+                    ci1,ci2,ci3 = st.columns([2,1,1])
+                    ci1.markdown(f'<div class="inv-card"><strong>{r["instrumento"]}</strong><br><small style="color:#95A5A6;">{r["fecha"]}</small></div>', unsafe_allow_html=True)
+                    ci2.metric("Monto",fmt_ar(r['monto']))
+                    rv = float(r.get('rentabilidad',0)) if pd.notna(r.get('rentabilidad',0)) else 0
+                    ci3.metric("Rentabilidad",f"{rv:.1f}%",delta=f"{rv:.1f}%" if rv!=0 else None)
+        with tabs_inv[1]:
+            if es_admin:
+                st.markdown("#### 📤 Enviar recomendación")
+                with st.form("rec_admin"):
+                    ra1,ra2 = st.columns(2)
+                    ins_a = ra1.selectbox("📊 Instrumento",["Dólar MEP","FCI","CEDEAR","Plazo Fijo","Bonos","Cripto","Acciones","Otro"])
+                    mon_a = ra2.number_input("💵 Monto Sugerido ($)",min_value=0.0,step=1000.0)
+                    msg_a = st.text_area("💬 Análisis / Recomendación")
+                    if st.form_submit_button("📤 ENVIAR",use_container_width=True):
+                        ni = pd.DataFrame([{"email":cliente_mail,"fecha":date.today().strftime('%d/%m/%Y'),
+                            "instrumento":ins_a,"monto":mon_a,"rentabilidad":0,
+                            "mensaje":msg_a,"tipo_registro":"recomendacion_admin"}])
+                        write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
+                        st.success("✅ Recomendación enviada"); st.cache_data.clear()
+            else:
+                if recs.empty:
+                    st.info("📭 Tu contador/a aún no te envió recomendaciones.")
+                else:
+                    for _,r in recs.sort_index(ascending=False).iterrows():
+                        with st.expander(f"📊 {r['instrumento']} — {r['fecha']}"):
+                            rc1,rc2 = st.columns([1,2])
+                            rc1.metric("Monto sugerido",fmt_ar(r['monto']))
+                            rc2.markdown(f"**Análisis:**\n\n{r.get('mensaje','')}")
+        if es_admin and len(tabs_inv) > 2:
+            with tabs_inv[2]:
+                if regs.empty:
+                    st.info("El cliente no tiene inversiones registradas.")
+                else:
+                    ra1,ra2,ra3 = st.columns(3)
+                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'],errors='coerce').fillna(0).sum()))
+                    ra2.metric("Posiciones", str(len(regs)))
+                    ra3.metric("Recomendaciones", str(len(recs)))
+
+    # ══════════════════════════════════════════
+    # PERFIL
+    # ══════════════════════════════════════════
+    elif menu == "⚙️ Perfil":
+        st.markdown(f'<div class="page-header"><div><h2>⚙️ Perfil</h2><span>{user["nombre"]} · {user["email"]}</span></div></div>', unsafe_allow_html=True)
+
+        # Admin tiene tab extra para la frase semanal
+        if es_admin:
+            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
+        else:
+            tab_pf1, tab_pf2 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp"])
+
+        with tab_pf1:
+            col_pf,_ = st.columns([1,2])
+            with col_pf:
+                st.markdown("#### 🔒 Cambiar contrasena")
+                with st.form("p"):
+                    n1 = st.text_input("Nueva contrasena", type="password")
+                    n2 = st.text_input("Repetir contrasena", type="password")
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.form_submit_button("CAMBIAR CONTRASENA", use_container_width=True):
+                        if n1!=n2: st.error("No coinciden")
+                        elif len(n1)<=3: st.warning("Minimo 4 caracteres")
+                        else:
+                            df_u = data['users'].copy()
+                            df_u.loc[df_u['email']==user['email'],'password'] = n1
+                            write_ws("Users", df_u)
+                            st.success("Contrasena actualizada. Reingrsa.")
+                            st.session_state.clear(); st.cache_data.clear(); st.rerun()
+
+        with tab_pf2:
+            st.markdown("#### 📱 Personalizar mensaje de recordatorio WhatsApp")
+            tpl_default = "Hola {nombre}! Te recordamos que tenes un pago pendiente de {monto}. Muchas gracias!"
+            tpl_key     = f"wa_template_{user['email']}"
+            tpl_actual  = st.session_state.get(tpl_key, st.session_state.get('wa_template', tpl_default))
+            col_wa1, col_wa2 = st.columns([3,2])
+            with col_wa1:
+                nuevo_tpl = st.text_area("Texto del mensaje:", value=tpl_actual, height=130,
+                    help="Usa {nombre} y {monto} como variables automaticas.")
+                if st.button("Guardar mensaje de forma permanente", use_container_width=True):
+                    st.session_state[tpl_key] = nuevo_tpl
+                    st.session_state['wa_template'] = nuevo_tpl
+                    df_u = data['users'].copy()
+                    if 'wa_template' not in df_u.columns: df_u['wa_template'] = ''
+                    df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = nuevo_tpl
+                    write_ws("Users", df_u)
+                    st.cache_data.clear()
+                    st.success("Mensaje guardado!")
+                if st.button("Restaurar mensaje por defecto", use_container_width=True):
+                    st.session_state[tpl_key] = tpl_default
+                    st.session_state['wa_template'] = tpl_default
+                    st.rerun()
+            with col_wa2:
+                st.markdown("##### Vista previa")
+                preview = nuevo_tpl.replace("{nombre}", "Juan Perez").replace("{monto}", "$ 15.000")
+                st.markdown(
+                    f"<div style='background:#DCF8C6; border-radius:12px 12px 3px 12px;"
+                    f"padding:12px 16px; font-size:0.9rem; color:#1A252F;"
+                    f"box-shadow:0 2px 6px rgba(0,0,0,0.12); max-width:280px; margin-top:8px;'>"
+                    + preview +
+                    "</div><div style='color:#95A5A6; font-size:0.75rem; margin-top:4px;"
+                    "text-align:right; max-width:280px;'>Enviado</div>",
+                    unsafe_allow_html=True)
+
+        # ── TAB FRASE SEMANAL (solo admin) ──
+        if es_admin:
+            with tab_pf3:
+                st.markdown("#### ✨ Frase semanal para los clientes")
+                st.markdown("""
+                <div style='background:#F0F7FF; border-left:4px solid #1B4F8A;
+                            border-radius:8px; padding:10px 14px; margin-bottom:12px; font-size:0.85rem;'>
+                Al guardar, la frase aparece como <strong>popup al ingresar</strong> y queda
+                visible en la parte superior del dashboard de cada cliente durante toda la semana.
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Leer frase actual del Config sheet (columna 'frase_semanal', fila 1)
+                frase_actual = st.session_state.get('frase_semanal_admin', '')
+                if not frase_actual:
+                    try:
+                        if 'frase_semanal' in df_config.columns:
+                            _f = df_config['frase_semanal'].dropna()
+                            frase_actual = str(_f.iloc[0]) if not _f.empty else ''
+                    except Exception:
+                        frase_actual = ''
+
+                col_fr1, col_fr2 = st.columns([3,2])
+                with col_fr1:
+                    nueva_frase = st.text_area(
+                        "✏️ Escribí la frase de esta semana:",
+                        value=frase_actual, height=120,
+                        placeholder="Ej: El éxito financiero no es un destino, es un hábito diario. ¡Vamos juntos! 💪"
+                    )
+                    autor_frase = st.text_input("Autor / Firma (opcional):",
+                        placeholder="Ej: — Tu contadora, Jessica")
+
+                    if st.button("💾 Publicar frase de la semana", use_container_width=True, key="btn_pub_frase"):
+                        frase_completa = nueva_frase
+                        if autor_frase:
+                            frase_completa = nueva_frase + f"\n\n— {autor_frase}"
+                        # Guardar en Config sheet
+                        try:
+                            df_cfg_upd = df_config.copy()
+                            if 'frase_semanal' not in df_cfg_upd.columns:
+                                df_cfg_upd['frase_semanal'] = ''
+                            df_cfg_upd.loc[0, 'frase_semanal'] = frase_completa
+                            write_ws("Config", df_cfg_upd)
+                            st.session_state['frase_semanal_admin'] = frase_completa
+                            st.cache_data.clear()
+                            st.session_state.pop('data_cache', None)
+                            st.success("✅ Frase publicada! Los clientes la verán al ingresar.")
+                        except Exception as _e:
+                            st.error(f"Error al guardar: {_e}")
+
+                    if st.button("🗑️ Quitar frase", use_container_width=True, key="btn_del_frase"):
+                        try:
+                            df_cfg_upd = df_config.copy()
+                            if 'frase_semanal' in df_cfg_upd.columns:
+                                df_cfg_upd['frase_semanal'] = ''
+                            write_ws("Config", df_cfg_upd)
+                            st.session_state['frase_semanal_admin'] = ''
+                            st.cache_data.clear()
+                            st.session_state.pop('data_cache', None)
+                            st.success("Frase quitada.")
+                        except Exception as _e:
+                            st.error(f"Error: {_e}")
+
+                with col_fr2:
+                    st.markdown("##### 👁️ Vista previa del popup")
+                    _prev_frase = nueva_frase if nueva_frase else "Tu frase aparecerá aquí..."
+                    _prev_autor = f"\n\n— {autor_frase}" if autor_frase else ""
+                    st.markdown(f"""
+                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:16px; padding:24px 20px; text-align:center;
+                                box-shadow:0 8px 24px rgba(27,79,138,0.35); margin-top:8px;'>
+                        <div style='font-size:1.8rem; margin-bottom:8px;'>✨</div>
+                        <p style='color:white; font-size:0.95rem; font-style:italic;
+                                  line-height:1.6; margin:0;'>{_prev_frase}</p>
+                        <p style='color:#BDC3C7; font-size:0.8rem; margin:12px 0 0 0;'>{_prev_autor.replace(chr(10),'')}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
