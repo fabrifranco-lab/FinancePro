@@ -10,20 +10,33 @@ from datetime import datetime, date
 import time
 import urllib.parse
 import io
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
-# ─────────────────────────────────────────────
-# 1. CONFIG GLOBAL
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
 
 def fmt_ar(valor):
-    """Formatea en pesos AR. Sin decimales si el valor es entero."""
+    """Formatea en pesos AR. Siempre sin decimales (los centavos no se usan)."""
     try:
         v = float(valor)
-        if v == int(v):
-            return f"$ {int(v):,}".replace(",",".")
-        return f"$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
-    except: return "$ 0"
+        return "$ " + f"{int(round(v)):,}".replace(",",".")
+    except:
+        return "$ 0"
+
+def fmt_ar_m(valor):
+    """Para métricas: sin decimales, sin abreviaciones. 
+    Solo si supera 100 millones agrega x1000 como referencia."""
+    try:
+        v = float(valor)
+        base = "$ " + f"{int(round(v)):,}".replace(",",".")
+        return base
+    except:
+        return "$ 0"
 
 COLORS = {
     "primary":   "#1B4F8A",
@@ -108,15 +121,25 @@ input, select, textarea {{ color:{COLORS['text']} !important; }}
 .stMain label, .stForm label {{ color:{COLORS['text']} !important; font-weight:600 !important; font-size:0.85rem !important; }}
 
 [data-testid="stMetric"] {{
-    background:{COLORS['white']} !important; padding:16px !important;
+    background:{COLORS['white']} !important;
+    padding:8px 10px !important;
     border-radius:12px !important; border:1px solid #D5DBDB !important;
     border-left:5px solid {COLORS['primary']} !important;
     box-shadow:0 2px 8px rgba(0,0,0,0.07) !important;
     transition:transform 0.2s, box-shadow 0.2s !important;
+    min-width:0 !important;
 }}
 [data-testid="stMetric"]:hover {{ transform:translateY(-2px) !important; box-shadow:0 6px 16px rgba(0,0,0,0.12) !important; }}
-[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.78rem !important; font-weight:700 !important; letter-spacing:0.06em !important; text-transform:uppercase !important; }}
-[data-testid="stMetricValue"] {{ font-size:1.3rem !important; color:{COLORS['text']} !important; font-weight:700 !important; }}
+[data-testid="stMetricLabel"] {{ color:#7F8C8D !important; font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.04em !important; text-transform:uppercase !important; }}
+[data-testid="stMetricValue"] {{
+    font-size:0.92rem !important;
+    color:{COLORS['text']} !important;
+    font-weight:700 !important;
+    white-space:nowrap !important;
+    overflow:hidden !important;
+    text-overflow:ellipsis !important;
+    line-height:1.3 !important;
+}}
 
 .stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
 .stTabs [data-baseweb="tab"] {{ border-radius:8px !important; font-weight:600 !important; color:#7F8C8D !important; padding:8px 16px !important; }}
@@ -339,6 +362,18 @@ def get_data():
         "inv":    cache.get("Inversiones",  base["inv"]),
     }
 
+def get_frase_semanal(df_config):
+    """Lee la frase semanal desde la hoja Config."""
+    try:
+        if 'frase_semanal' in df_config.columns:
+            _f = df_config['frase_semanal'].dropna()
+            _f = _f[_f.astype(str).str.strip() != '']
+            if not _f.empty:
+                return str(_f.iloc[0]).strip()
+    except Exception:
+        pass
+    return ""  
+
 data = get_data()
 
 if 'logged_in' not in st.session_state:
@@ -381,11 +416,14 @@ if not st.session_state['logged_in']:
                 match = users[(users['email']==u_email) & (users['password']==u_pass)]
                 if not match.empty:
                     u_dict = match.iloc[0].to_dict()
-                    # Cargar mensaje WA personalizado si existe en columna 'wa_template' de Users
                     tpl_saved = str(u_dict.get('wa_template','')).strip()
                     if tpl_saved and tpl_saved not in ('nan',''):
                         st.session_state['wa_template'] = tpl_saved
-                    st.session_state.update({'logged_in':True,'user':u_dict})
+                    st.session_state.update({
+                        'logged_in': True,
+                        'user': u_dict,
+                        'login_ts': time.time()   # timestamp del login para control de 12hs
+                    })
                     st.rerun()
                 else:
                     st.error("❌ Email o contraseña incorrectos")
@@ -395,6 +433,17 @@ if not st.session_state['logged_in']:
 # 5. APP PRINCIPAL
 # ─────────────────────────────────────────────
 else:
+    # ── Verificar sesión de 12 horas ──
+    _SESSION_HS = 12
+    _login_ts   = st.session_state.get('login_ts', time.time())
+    _elapsed_hs = (time.time() - _login_ts) / 3600
+    if _elapsed_hs > _SESSION_HS:
+        st.session_state.clear()
+        st.cache_data.clear()
+        st.session_state.pop('data_cache', None)
+        st.info("⏰ Tu sesión expiró después de 12 horas. Ingresá nuevamente.")
+        st.rerun()
+
     user        = st.session_state['user']
     es_admin    = user['rol'] == 'admin'
     df_config   = data['config'].copy()
@@ -534,6 +583,206 @@ else:
     else:
         df_config_cliente = df_config.copy()
 
+    # ── HELPER: generar PDF ──
+    def generar_pdf(df_periodo, df_todos, cliente_nombre, periodo_str):
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4,
+            rightMargin=1.5*cm, leftMargin=1.5*cm,
+            topMargin=1.5*cm, bottomMargin=1.5*cm)
+
+        # Estilos
+        styles = getSampleStyleSheet()
+        COLOR_PRIMARY  = colors.HexColor('#1B4F8A')
+        COLOR_DARK     = colors.HexColor('#1A252F')
+        COLOR_VERDE    = colors.HexColor('#27AE60')
+        COLOR_ROJO     = colors.HexColor('#E74C3C')
+        COLOR_GRIS     = colors.HexColor('#ECF0F1')
+        COLOR_NARANJA  = colors.HexColor('#F39C12')
+
+        st_titulo = ParagraphStyle('titulo', parent=styles['Title'],
+            fontSize=20, textColor=COLOR_PRIMARY, spaceAfter=4,
+            fontName='Helvetica-Bold')
+        st_subtit = ParagraphStyle('subtit', parent=styles['Normal'],
+            fontSize=10, textColor=colors.HexColor('#7F8C8D'), spaceAfter=2)
+        st_h1 = ParagraphStyle('h1', parent=styles['Heading1'],
+            fontSize=12, textColor=COLOR_PRIMARY, spaceBefore=14, spaceAfter=4,
+            fontName='Helvetica-Bold', borderPad=4)
+        st_body = ParagraphStyle('body', parent=styles['Normal'],
+            fontSize=9, textColor=COLOR_DARK, spaceAfter=3)
+        st_footer = ParagraphStyle('footer', parent=styles['Normal'],
+            fontSize=7, textColor=colors.HexColor('#95A5A6'),
+            alignment=TA_CENTER)
+
+        story = []
+
+        # ── ENCABEZADO ──
+        story.append(Paragraph("💼 FinancePRO", st_titulo))
+        story.append(Paragraph(f"Reporte Financiero — {cliente_nombre}", st_subtit))
+        story.append(Paragraph(f"Período: {periodo_str}  |  Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}", st_subtit))
+        story.append(HRFlowable(width="100%", thickness=2, color=COLOR_PRIMARY, spaceAfter=10))
+
+        # ── MÉTRICAS RESUMEN ──
+        ing   = df_periodo[df_periodo['tipo']=='Ingreso']['monto'].sum()
+        gas   = df_periodo[df_periodo['tipo']=='Gasto']['monto'].sum()
+        util  = ing - gas
+        pend  = df_todos['pendiente'].sum()
+        gas_f = df_periodo[(df_periodo['tipo']=='Gasto') & (df_periodo.get('naturaleza', pd.Series(['Variable']*len(df_periodo)))=='Fijo')]['monto'].sum() if 'naturaleza' in df_periodo.columns else 0
+        gas_v = gas - gas_f
+        margen = (util/ing*100) if ing > 0 else 0
+
+        story.append(Paragraph("📊 Resumen del Período", st_h1))
+
+        datos_resumen = [
+            ['Concepto', 'Monto', ''],
+            ['💰 Ingresos Totales',    fmt_ar(ing),    ''],
+            ['💸 Gastos Totales',      fmt_ar(gas),    f'{margen:.1f}% margen'],
+            ['🔒 Gastos Fijos',        fmt_ar(gas_f),  ''],
+            ['📊 Gastos Variables',    fmt_ar(gas_v),  ''],
+            ['📈 Utilidad Neta',       fmt_ar(util),   ''],
+            ['⏳ Pendientes Cobro',    fmt_ar(pend),   ''],
+            ['🏦 Caja Real Estimada',  fmt_ar(util - pend), ''],
+        ]
+        t_resumen = Table(datos_resumen, colWidths=[7*cm, 5*cm, 5*cm])
+        t_resumen.setStyle(TableStyle([
+            ('BACKGROUND',  (0,0), (-1,0),  COLOR_PRIMARY),
+            ('TEXTCOLOR',   (0,0), (-1,0),  colors.white),
+            ('FONTNAME',    (0,0), (-1,0),  'Helvetica-Bold'),
+            ('FONTSIZE',    (0,0), (-1,-1), 9),
+            ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
+            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
+            ('TOPPADDING',  (0,0), (-1,-1), 5),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 5),
+            ('LEFTPADDING', (0,0), (-1,-1), 8),
+            # Colores especiales
+            ('TEXTCOLOR',   (1,6), (1,6),   COLOR_VERDE if util >= 0 else COLOR_ROJO),
+            ('FONTNAME',    (0,6), (-1,6),  'Helvetica-Bold'),
+            ('TEXTCOLOR',   (1,7), (1,7),   COLOR_NARANJA),
+        ]))
+        story.append(t_resumen)
+        story.append(Spacer(1, 12))
+
+        # ── INGRESOS POR CATEGORÍA ──
+        df_ing = df_periodo[df_periodo['tipo']=='Ingreso']
+        if not df_ing.empty:
+            story.append(Paragraph("💰 Ingresos por Categoría", st_h1))
+            gi = df_ing.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
+            datos_ing = [['Categoría', 'Monto', '% Part.']]
+            for _, row in gi.iterrows():
+                pct = row['monto']/ing*100 if ing > 0 else 0
+                datos_ing.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
+            t_ing = Table(datos_ing, colWidths=[8*cm, 5*cm, 4*cm])
+            t_ing.setStyle(TableStyle([
+                ('BACKGROUND',  (0,0), (-1,0), COLOR_PRIMARY),
+                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
+                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE',    (0,0), (-1,-1), 9),
+                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
+                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
+                ('TOPPADDING',  (0,0), (-1,-1), 4),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
+                ('LEFTPADDING', (0,0), (-1,-1), 8),
+            ]))
+            story.append(t_ing)
+            story.append(Spacer(1, 12))
+
+        # ── GASTOS POR CATEGORÍA ──
+        df_gas = df_periodo[df_periodo['tipo']=='Gasto']
+        if not df_gas.empty:
+            story.append(Paragraph("💸 Gastos por Categoría", st_h1))
+            gg = df_gas.groupby('categoria')['monto'].sum().reset_index().sort_values('monto', ascending=False)
+            datos_gas = [['Categoría', 'Monto', '% Part.']]
+            for _, row in gg.iterrows():
+                pct = row['monto']/gas*100 if gas > 0 else 0
+                datos_gas.append([row['categoria'], fmt_ar(row['monto']), f'{pct:.1f}%'])
+            t_gas = Table(datos_gas, colWidths=[8*cm, 5*cm, 4*cm])
+            t_gas.setStyle(TableStyle([
+                ('BACKGROUND',  (0,0), (-1,0), COLOR_ROJO),
+                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
+                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE',    (0,0), (-1,-1), 9),
+                ('ALIGN',       (1,0), (-1,-1), 'RIGHT'),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
+                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
+                ('TOPPADDING',  (0,0), (-1,-1), 4),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
+                ('LEFTPADDING', (0,0), (-1,-1), 8),
+            ]))
+            story.append(t_gas)
+            story.append(Spacer(1, 12))
+
+        # ── PENDIENTES DE COBRO ──
+        df_pend = df_todos[df_todos['pendiente'] > 0]
+        if not df_pend.empty:
+            story.append(Paragraph("⏳ Pendientes de Cobro", st_h1))
+            datos_pend = [['Contacto', 'Fecha', 'Monto Pendiente']]
+            for _, row in df_pend.iterrows():
+                datos_pend.append([
+                    str(row.get('nota',''))[:40],
+                    str(row.get('fecha','')),
+                    fmt_ar(row['pendiente'])
+                ])
+            t_pend = Table(datos_pend, colWidths=[8*cm, 4*cm, 5*cm])
+            t_pend.setStyle(TableStyle([
+                ('BACKGROUND',  (0,0), (-1,0), COLOR_NARANJA),
+                ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
+                ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE',    (0,0), (-1,-1), 9),
+                ('ALIGN',       (2,0), (2,-1),  'RIGHT'),
+                ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
+                ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
+                ('TOPPADDING',  (0,0), (-1,-1), 4),
+                ('BOTTOMPADDING',(0,0),(-1,-1), 4),
+                ('LEFTPADDING', (0,0), (-1,-1), 8),
+            ]))
+            story.append(t_pend)
+            story.append(Spacer(1, 12))
+
+        # ── DETALLE DE MOVIMIENTOS ──
+        story.append(Paragraph("📋 Detalle de Movimientos del Período", st_h1))
+        cols_mov = [c for c in ['fecha','tipo','categoria','nota','monto','medio'] if c in df_periodo.columns]
+        df_mov_show = df_periodo[cols_mov].sort_values('fecha', ascending=False) if 'fecha' in cols_mov else df_periodo[cols_mov]
+        datos_mov = [[c.capitalize() for c in cols_mov]]
+        for _, row in df_mov_show.iterrows():
+            fila = []
+            for c in cols_mov:
+                val = row[c]
+                if c == 'monto':
+                    fila.append(fmt_ar(val))
+                else:
+                    fila.append(str(val)[:35] if pd.notna(val) else '')
+            datos_mov.append(fila)
+
+        # Anchos de columna adaptativos
+        col_w = [2.5*cm, 2*cm, 3*cm, 5.5*cm, 3*cm, 2.5*cm][:len(cols_mov)]
+        t_mov = Table(datos_mov, colWidths=col_w, repeatRows=1)
+        t_mov.setStyle(TableStyle([
+            ('BACKGROUND',  (0,0), (-1,0), COLOR_DARK),
+            ('TEXTCOLOR',   (0,0), (-1,0), colors.white),
+            ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE',    (0,0), (-1,-1), 7.5),
+            ('ALIGN',       (4,0), (4,-1),  'RIGHT'),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, COLOR_GRIS]),
+            ('GRID',        (0,0), (-1,-1), 0.3, colors.HexColor('#BDC3C7')),
+            ('TOPPADDING',  (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING',(0,0),(-1,-1), 3),
+            ('LEFTPADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(t_mov)
+
+        # ── FOOTER ──
+        story.append(Spacer(1, 16))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#BDC3C7')))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(
+            f"FinancePRO v12.2  |  Reporte generado el {datetime.now().strftime('%d/%m/%Y a las %H:%M')}  |  Confidencial",
+            st_footer))
+
+        doc.build(story)
+        buf.seek(0)
+        return buf
+
     # ── HELPER: exportar Excel ──
     def generar_excel(df_periodo, df_todos, cliente_nombre, periodo_str):
         """Genera Excel multi-hoja. Intenta xlsxwriter, luego openpyxl, luego CSV zipeado."""
@@ -656,22 +905,72 @@ else:
         per_str = f"{rango[0].strftime('%d/%m/%Y')} – {rango[1].strftime('%d/%m/%Y')}" if isinstance(rango,(list,tuple)) else ""
         st.markdown(f'<div class="page-header"><div><h2>📊 Dashboard Financiero</h2><span>{sel_nombre} · {per_str}</span></div></div>', unsafe_allow_html=True)
 
+        # ── FRASE SEMANAL ──
+        _frase = get_frase_semanal(df_config)
+        if _frase and not es_admin:
+            # Popup (solo 1 vez por sesión)
+            _popup_key = f"frase_vista_{user['email']}"
+            if not st.session_state.get(_popup_key, False):
+                st.session_state[_popup_key] = True
+                # Mostrar como diálogo visual con st.empty y JS
+                _popup_placeholder = st.empty()
+                _popup_placeholder.markdown(f"""
+                <div id="frase-popup" onclick="this.style.display='none'"
+                     style='position:fixed; top:0; left:0; width:100%; height:100%;
+                            background:rgba(0,0,0,0.6); z-index:99999;
+                            display:flex; align-items:center; justify-content:center;
+                            cursor:pointer;'>
+                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:20px; padding:40px 36px; max-width:480px;
+                                text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+                                animation:fadeIn 0.4s ease;'>
+                        <div style='font-size:2.5rem; margin-bottom:12px;'>✨</div>
+                        <p style='color:white; font-size:1.05rem; font-style:italic;
+                                  line-height:1.7; margin:0; white-space:pre-line;'>{_frase}</p>
+                        <p style='color:#BDC3C7; font-size:0.78rem; margin:20px 0 0 0;'>
+                            Tocá en cualquier lugar para continuar</p>
+                    </div>
+                </div>
+                <style>
+                @keyframes fadeIn {{ from {{ opacity:0; transform:scale(0.95); }}
+                                     to   {{ opacity:1; transform:scale(1); }} }}
+                </style>
+                """, unsafe_allow_html=True)
+
+            # Banner fijo en el dashboard (siempre visible)
+            _lineas_frase = _frase.split('\n')
+            _texto_banner = _lineas_frase[0] if _lineas_frase else _frase
+            _autor_banner = _lineas_frase[-1] if len(_lineas_frase) > 1 else ""
+            st.markdown(f"""
+            <div style='background:linear-gradient(135deg,#1B4F8A11,#2980B911);
+                        border-left:4px solid #1B4F8A; border-radius:10px;
+                        padding:10px 16px; margin-bottom:14px;
+                        display:flex; align-items:center; gap:12px;'>
+                <span style='font-size:1.4rem;'>✨</span>
+                <div>
+                    <p style='margin:0; font-style:italic; color:#1B4F8A;
+                               font-size:0.88rem;'>{_texto_banner}</p>
+                    {f"<p style='margin:2px 0 0 0; font-size:0.75rem; color:#7F8C8D;'>{_autor_banner}</p>" if _autor_banner else ""}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
         # Métricas fila 1
         m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("💰 INGRESOS",    fmt_ar(ing))
-        m2.metric("💸 GASTOS",      fmt_ar(gas))
-        m3.metric("🔒 G. FIJOS",    fmt_ar(gas_f))
-        m4.metric("📊 G. VARIABLES",fmt_ar(gas_v))
-        m5.metric("📈 UTILIDAD",    fmt_ar(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
+        m1.metric("💰 INGRESOS",    fmt_ar_m(ing))
+        m2.metric("💸 GASTOS",      fmt_ar_m(gas))
+        m3.metric("🔒 G. FIJOS",    fmt_ar_m(gas_f))
+        m4.metric("📊 G. VARIABLES",fmt_ar_m(gas_v))
+        m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
 
         # Métricas fila 2
         m6,m7,m8,_ = st.columns(4)
-        m6.metric("🏦 CAJA REAL",  fmt_ar(caja),
+        m6.metric("🏦 CAJA REAL",  fmt_ar_m(caja),
                    delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
                    help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
-        m7.metric("⏳ PENDIENTES", fmt_ar(pend_t),
+        m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t),
                    help="Cobros pendientes de tus clientes")
-        m8.metric("📦 INVERTIDO",  fmt_ar(inv_total))
+        m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total))
         if gas_comprometido > 0:
             st.markdown(
                 f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
@@ -1042,17 +1341,39 @@ else:
             else:
                 st.info("Sin datos históricos de ingresos para este cliente.")
 
-        # EXPORTAR EXCEL
+        # EXPORTAR REPORTES
         st.divider()
         per_str_f = f"{rango[0].strftime('%Y%m%d')}_{rango[1].strftime('%Y%m%d')}" if isinstance(rango,(list,tuple)) else "periodo"
-        _exp_buf, _exp_ext, _exp_mime = generar_excel(df_f, df_c, sel_nombre, per_str)
-        _exp_label = "📥 Exportar Reporte Excel" if _exp_ext=="xlsx" else "📥 Exportar Reporte CSV"
-        st.download_button(
-            label=_exp_label,
-            data=_exp_buf,
-            file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.{_exp_ext}",
-            mime=_exp_mime
-        )
+        _col_pdf, _col_xls = st.columns(2)
+
+        # Botón PDF
+        with _col_pdf:
+            try:
+                _pdf_buf = generar_pdf(df_f, df_c, sel_nombre, per_str)
+                st.download_button(
+                    label="📄 Descargar Reporte PDF",
+                    data=_pdf_buf,
+                    file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as _epdf:
+                st.error(f"Error generando PDF: {_epdf}")
+
+        # Botón Excel
+        with _col_xls:
+            try:
+                _exp_buf, _exp_ext, _exp_mime = generar_excel(df_f, df_c, sel_nombre, per_str)
+                _exp_label = "📊 Descargar Reporte Excel" if _exp_ext=="xlsx" else "📊 Descargar CSV"
+                st.download_button(
+                    label=_exp_label,
+                    data=_exp_buf,
+                    file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.{_exp_ext}",
+                    mime=_exp_mime,
+                    use_container_width=True
+                )
+            except Exception as _exls:
+                st.warning(f"Excel no disponible: {_exls}")
 
     # ══════════════════════════════════════════
     # MOVIMIENTOS
@@ -1108,19 +1429,37 @@ else:
                         ch_sel = opciones_ch[sel_ch_key]
                         st.success(f"Cheque N°{ch_sel.get('numero','')} — {ch_sel.get('banco','')} — {fmt_ar(ch_sel.get('monto',0))}")
 
-            # ── PASO 4: ¿Cobro con 2 medios? (solo Ingreso) ──────────
-            if tp_v == "Ingreso":
-                st.checkbox("💰 Cobro con 2 medios de pago", key="pago_mixto_cb")
+            # ── PASO 4: ¿2 medios de pago/cobro? (Ingreso Y Gasto) ──
+            _lbl_2medios = "💰 Cobro con 2 medios de pago" if tp_v == "Ingreso" else "💳 Pago con 2 medios"
+            st.checkbox(_lbl_2medios, key="pago_mixto_cb")
+            _pago_mixto = st.session_state.get('pago_mixto_cb', False)
 
-            _pago_mixto = tp_v == "Ingreso" and st.session_state.get('pago_mixto_cb', False)
-
-            # Medio del 2° cobro (reactivo, fuera del form)
+            # Medio del 2° cobro/pago (reactivo, fuera del form)
             _med2 = ""
             _es_cheque_m2 = False
             if _pago_mixto:
+                _lbl_med2 = "🏦 2° Medio de cobro:" if tp_v == "Ingreso" else "🏦 2° Medio de pago:"
                 _medio2_lista = [m for m in medios if m != md_v]
-                _med2 = st.selectbox("🏦 2° Medio de cobro:", _medio2_lista, key="medio2_outer")
+                _med2 = st.selectbox(_lbl_med2, _medio2_lista, key="medio2_outer")
                 _es_cheque_m2 = _med2.lower() in ('cheque','e-cheq','echeq') and cliente_tiene_cheques
+                # Para Gasto con 2° medio cheque: tipo de cheque del 2° pago
+                _tipo_ch2 = "Cheque propio"
+                _ch2_sel  = None
+                if _es_cheque_m2 and tp_v == "Gasto":
+                    _tipo_ch2 = st.radio("Tipo de cheque (2° pago):",
+                        ["Cheque propio","Cheque de tercero (de mi banco)"],
+                        horizontal=True, key="tipo_ch2_g")
+                    if _tipo_ch2 == "Cheque de tercero (de mi banco)":
+                        if df_ch_disponibles.empty:
+                            st.warning("No tenés cheques de terceros disponibles.")
+                        else:
+                            _ops_ch2 = {
+                                f"N°{r['numero']} | {r.get('banco','')} | {fmt_ar(r['monto'])}": r
+                                for _,r in df_ch_disponibles.iterrows()
+                            }
+                            _sel_ch2_key = st.selectbox("Elegí el cheque (2° pago):", list(_ops_ch2.keys()), key="sel_ch2_terc")
+                            _ch2_sel = _ops_ch2[_sel_ch2_key]
+                            st.success(f"Cheque N°{_ch2_sel.get('numero','')} — {fmt_ar(_ch2_sel.get('monto',0))}")
 
             st.markdown("---")
 
@@ -1131,7 +1470,8 @@ else:
 
                 # ── BLOQUE 1: datos del primer cobro/pago ────────────
                 if _pago_mixto:
-                    st.markdown(f"#### 📋 1° Cobro — {md_v}")
+                    _lbl_b1 = f"#### 📋 1° Cobro — {md_v}" if tp_v == "Ingreso" else f"#### 📋 1° Pago — {md_v}"
+                    st.markdown(_lbl_b1)
                 else:
                     st.markdown("#### 📋 Datos del movimiento")
 
@@ -1146,7 +1486,7 @@ else:
                 if tp_v == "Ingreso":
                     ip1, ip2 = st.columns(2)
                     pn_v = ip1.number_input("⏳ Pendiente de cobro ($)", min_value=0.0, step=100.0)
-                    wa_v = ip2.text_input("📱 WhatsApp cliente (549...)")
+                    wa_v = ip2.text_input("📱 WhatsApp del deudor (549...)")
 
                 # Cheque del 1° cobro (Ingreso)
                 ch_num_v = ch_banco_v = ch_librador_v = ch_venc_v = ""
@@ -1203,20 +1543,27 @@ else:
                             key="fecha_parcial_field").strftime('%d/%m/%Y')
                         pp3.metric("Resto diferido", fmt_ar(max(0, mon_v - monto_parcial_v)))
 
-                # ── BLOQUE 2: 2° cobro (solo si pago mixto activo) ───
+                # ── BLOQUE 2: 2° cobro/pago (si pago mixto activo) ──
                 mon2_v      = 0.0
                 ch2_num_v   = ch2_banco_v = ch2_lib_v = ch2_venc_v = ""
 
                 if _pago_mixto:
                     st.markdown("---")
-                    st.markdown(f"#### 📋 2° Cobro — {_med2}")
-                    mon2_v = st.number_input("💵 Monto 2° cobro ($)", min_value=0.0, step=1000.0, key="mon2_field")
+                    _lbl_b2 = f"#### 📋 2° Cobro — {_med2}" if tp_v == "Ingreso" else f"#### 📋 2° Pago — {_med2}"
+                    st.markdown(_lbl_b2)
+                    _lbl_mon2 = "💵 Monto 2° cobro ($)" if tp_v == "Ingreso" else "💵 Monto 2° pago ($)"
+                    mon2_v = st.number_input(_lbl_mon2, min_value=0.0, step=1000.0, key="mon2_field")
                     if _es_cheque_m2:
-                        st.markdown("**🏦 Datos del cheque recibido (2° cobro):**")
+                        _lbl_ch2 = "**🏦 Datos del cheque recibido (2° cobro):**" if tp_v == "Ingreso" else "**🏦 Datos del cheque (2° pago):**"
+                        st.markdown(_lbl_ch2)
                         ch2k1,ch2k2,ch2k3,ch2k4 = st.columns(4)
-                        ch2_num_v   = ch2k1.text_input("N° cheque (2°)",  key="ch2_num_f")
-                        ch2_banco_v = ch2k2.text_input("Banco (2°)",      key="ch2_banco_f")
-                        ch2_lib_v   = ch2k3.text_input("Librador (2°)",   key="ch2_lib_f")
+                        # Si es cheque de tercero en Gasto y ya se seleccionó, prellenar
+                        _ch2_num_pre  = str(_ch2_sel.get('numero','')) if _ch2_sel else ""
+                        _ch2_banco_pre= str(_ch2_sel.get('banco',''))  if _ch2_sel else ""
+                        _ch2_lib_pre  = str(_ch2_sel.get('librador','')) if _ch2_sel else ""
+                        ch2_num_v   = ch2k1.text_input("N° cheque (2°)",  value=_ch2_num_pre,  key="ch2_num_f")
+                        ch2_banco_v = ch2k2.text_input("Banco (2°)",      value=_ch2_banco_pre, key="ch2_banco_f")
+                        ch2_lib_v   = ch2k3.text_input("Librador (2°)",   value=_ch2_lib_pre,  key="ch2_lib_f")
                         ch2_venc_v  = ch2k4.date_input("📅 Vencimiento (2°)", key="ch2_venc_f").strftime('%d/%m/%Y')
 
                 # ── GUARDAR ──────────────────────────────────────────
@@ -1281,9 +1628,10 @@ else:
 
                         df_concat = pd.concat([df_movs_raw, nueva], ignore_index=True)
 
-                        # 2° cobro (pago mixto)
-                        if _pago_mixto and _med2:
-                            _nota2 = f"{nt_v} [2° cobro: {_med2}]"
+                        # 2° cobro/pago (pago mixto)
+                        if _pago_mixto and _med2 and mon2_v > 0:
+                            _sufijo2 = "2° cobro" if tp_v == "Ingreso" else "2° pago"
+                            _nota2 = f"{nt_v} [{_sufijo2}: {_med2}]"
                             if ch2_num_v:
                                 _nota2 = f"{_nota2} [Ch N°{ch2_num_v} {ch2_banco_v} vto:{ch2_venc_v}]"
                             nueva2 = pd.DataFrame([{
@@ -1291,7 +1639,8 @@ else:
                                 "fecha": f_v.strftime('%d/%m/%Y'), "tipo": tp_v,
                                 "categoria": cat_v, "monto": mon2_v, "medio": _med2,
                                 "pendiente": 0, "nota": _nota2,
-                                "whatsapp_contacto": wa_v, "fecha_vencimiento": "",
+                                "whatsapp_contacto": wa_v if tp_v == "Ingreso" else "",
+                                "fecha_vencimiento": "",
                                 "cuotas":"","cuota_num":"",
                                 "cheque_numero": ch2_num_v, "cheque_banco": ch2_banco_v,
                                 "cheque_venc": ch2_venc_v,
@@ -1570,40 +1919,29 @@ else:
                 mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
 
     # ══════════════════════════════════════════
+    # ══════════════════════════════════════════
     # INVERSIONES
     # ══════════════════════════════════════════
     elif menu == "📈 Inversiones":
         st.markdown(f'<div class="page-header"><div><h2>📈 Inversiones</h2><span>{sel_nombre}</span></div></div>', unsafe_allow_html=True)
-
         mis_inv = df_inv_raw[df_inv_raw['email']==cliente_mail].copy() if not df_inv_raw.empty else pd.DataFrame()
         if not mis_inv.empty:
             if 'monto' in mis_inv.columns:
                 mis_inv['monto'] = pd.to_numeric(mis_inv['monto'],errors='coerce').fillna(0)
-            if 'rentabilidad' not in mis_inv.columns:
-                mis_inv['rentabilidad'] = 0
-            if 'tipo_registro' not in mis_inv.columns:
-                mis_inv['tipo_registro'] = 'recomendacion_admin'
-
-        regs  = mis_inv[mis_inv['tipo_registro']=='registro_cliente'] if not mis_inv.empty else pd.DataFrame()
-        recs  = mis_inv[mis_inv['tipo_registro']=='recomendacion_admin'] if not mis_inv.empty else pd.DataFrame()
-
-        # Métrica "INVERTIDO" en dashboard: suma de registros_cliente
+            if 'rentabilidad' not in mis_inv.columns: mis_inv['rentabilidad'] = 0
+            if 'tipo_registro' not in mis_inv.columns: mis_inv['tipo_registro'] = 'recomendacion_admin'
+        regs = mis_inv[mis_inv['tipo_registro']=='registro_cliente'] if not mis_inv.empty else pd.DataFrame()
+        recs = mis_inv[mis_inv['tipo_registro']=='recomendacion_admin'] if not mis_inv.empty else pd.DataFrame()
         tot_inv = regs['monto'].sum() if not regs.empty and 'monto' in regs.columns else 0
-
         if tot_inv > 0:
             mi1,mi2,mi3,_ = st.columns(4)
-            mi1.metric("📦 TOTAL INVERTIDO",fmt_ar(tot_inv))
+            mi1.metric("📦 TOTAL INVERTIDO", fmt_ar(tot_inv))
             if not regs.empty and 'rentabilidad' in regs.columns:
-                _rent_vals = pd.to_numeric(regs['rentabilidad'], errors='coerce').dropna()
-                mi2.metric("📈 RENT. PROM.", f"{_rent_vals.mean():.1f}%" if not _rent_vals.empty else "N/A")
-            mi3.metric("🔢 POSICIONES",str(len(regs)))
-
-        tabs_inv = st.tabs(
-            ["📝 Mis Registros","💡 Recomendaciones"] if not es_admin
-            else ["📝 Registros Cliente","💡 Enviar Recomendación","📊 Resumen Admin"]
-        )
-
-        # Tab 1: registros
+                _rv = pd.to_numeric(regs['rentabilidad'],errors='coerce').dropna()
+                mi2.metric("📈 RENT. PROM.", f"{_rv.mean():.1f}%" if not _rv.empty else "N/A")
+            mi3.metric("🔢 POSICIONES", str(len(regs)))
+        tabs_inv = st.tabs(["📝 Mis Registros","💡 Recomendaciones"] if not es_admin
+                           else ["📝 Registros Cliente","💡 Enviar Recomendación","📊 Resumen Admin"])
         with tabs_inv[0]:
             if not es_admin:
                 st.markdown("#### ➕ Registrar inversión")
@@ -1618,26 +1956,16 @@ else:
                             "instrumento":ins_r,"monto":mon_r,"rentabilidad":rent_r,
                             "mensaje":nota_r,"tipo_registro":"registro_cliente"}])
                         write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
-                        st.success("✅ Inversión registrada"); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
-
+                        st.success("✅ Inversión registrada"); st.cache_data.clear(); st.rerun()
             if regs.empty:
                 st.info("📭 Sin inversiones registradas.")
             else:
                 for _,r in regs.sort_index(ascending=False).iterrows():
                     ci1,ci2,ci3 = st.columns([2,1,1])
-                    ci1.markdown(f'<div class="inv-card"><strong>{r["instrumento"]}</strong>{"— "+str(r["mensaje"]) if pd.notna(r.get("mensaje","")) and r.get("mensaje","") else ""}<br><small style="color:#95A5A6;">{r["fecha"]}</small></div>', unsafe_allow_html=True)
+                    ci1.markdown(f'<div class="inv-card"><strong>{r["instrumento"]}</strong><br><small style="color:#95A5A6;">{r["fecha"]}</small></div>', unsafe_allow_html=True)
                     ci2.metric("Monto",fmt_ar(r['monto']))
                     rv = float(r.get('rentabilidad',0)) if pd.notna(r.get('rentabilidad',0)) else 0
                     ci3.metric("Rentabilidad",f"{rv:.1f}%",delta=f"{rv:.1f}%" if rv!=0 else None)
-                # Donut distribución
-                if len(regs) > 0:
-                    grp_inv = regs.groupby('instrumento')['monto'].sum().reset_index()
-                    fig_inv = px.pie(grp_inv,values='monto',names='instrumento',hole=0.5,
-                        color_discrete_sequence=COLORS['chart'],title="<b>Distribución</b>")
-                    fig_inv.update_layout(paper_bgcolor='rgba(0,0,0,0)',margin=dict(t=50,b=20,l=20,r=20),height=260)
-                    st.plotly_chart(fig_inv,use_container_width=True,key="pie_inv")
-
-        # Tab 2: recomendaciones
         with tabs_inv[1]:
             if es_admin:
                 st.markdown("#### 📤 Enviar recomendación")
@@ -1645,122 +1973,170 @@ else:
                     ra1,ra2 = st.columns(2)
                     ins_a = ra1.selectbox("📊 Instrumento",["Dólar MEP","FCI","CEDEAR","Plazo Fijo","Bonos","Cripto","Acciones","Otro"])
                     mon_a = ra2.number_input("💵 Monto Sugerido ($)",min_value=0.0,step=1000.0)
-                    msg_a = st.text_area("💬 Análisis / Recomendación",placeholder="Estrategia, riesgo, horizonte temporal...")
+                    msg_a = st.text_area("💬 Análisis / Recomendación")
                     if st.form_submit_button("📤 ENVIAR",use_container_width=True):
                         ni = pd.DataFrame([{"email":cliente_mail,"fecha":date.today().strftime('%d/%m/%Y'),
                             "instrumento":ins_a,"monto":mon_a,"rentabilidad":0,
                             "mensaje":msg_a,"tipo_registro":"recomendacion_admin"}])
                         write_ws("Inversiones", pd.concat([df_inv_raw,ni],ignore_index=True))
-                        st.success("✅ Recomendación enviada"); st.cache_data.clear(); st.session_state.pop('data_cache', None)
+                        st.success("✅ Recomendación enviada"); st.cache_data.clear()
             else:
                 if recs.empty:
-                    st.info("📭 Tu contadora aún no te envió recomendaciones.")
+                    st.info("📭 Tu contador/a aún no te envió recomendaciones.")
                 else:
                     for _,r in recs.sort_index(ascending=False).iterrows():
                         with st.expander(f"📊 {r['instrumento']} — {r['fecha']}"):
                             rc1,rc2 = st.columns([1,2])
                             rc1.metric("Monto sugerido",fmt_ar(r['monto']))
                             rc2.markdown(f"**Análisis:**\n\n{r.get('mensaje','')}")
-
-        # Tab 3: resumen admin
         if es_admin and len(tabs_inv) > 2:
             with tabs_inv[2]:
                 if regs.empty:
                     st.info("El cliente no tiene inversiones registradas.")
                 else:
                     ra1,ra2,ra3 = st.columns(3)
-                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'], errors='coerce').fillna(0).sum()))
-                    ra2.metric("Posiciones",str(len(regs)))
-                    ra3.metric("Recomendaciones",str(len(recs)))
-                    df_pos = regs[['fecha','instrumento','monto','rentabilidad','mensaje']].copy()
-                    df_pos['monto'] = df_pos['monto'].apply(fmt_ar)
-                    st.dataframe(df_pos.rename(columns={'fecha':'Fecha','instrumento':'Instrumento',
-                        'monto':'Monto','rentabilidad':'Rent.%','mensaje':'Detalle'}),
-                        use_container_width=True,hide_index=True)
+                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'],errors='coerce').fillna(0).sum()))
+                    ra2.metric("Posiciones", str(len(regs)))
+                    ra3.metric("Recomendaciones", str(len(recs)))
 
     # ══════════════════════════════════════════
     # PERFIL
     # ══════════════════════════════════════════
     elif menu == "⚙️ Perfil":
-        st.markdown(f'<div class="page-header"><div><h2>⚙️ Perfil</h2><span>{user["nombre"]} - {user["email"]}</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="page-header"><div><h2>⚙️ Perfil</h2><span>{user["nombre"]} · {user["email"]}</span></div></div>', unsafe_allow_html=True)
 
-        tab_pf1, tab_pf2 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp"])
+        # Admin tiene tab extra para la frase semanal
+        if es_admin:
+            tab_pf1, tab_pf2, tab_pf3 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp", "✨ Frase Semanal"])
+        else:
+            tab_pf1, tab_pf2 = st.tabs(["🔒 Contrasena", "📱 Mensaje WhatsApp"])
 
         with tab_pf1:
             col_pf,_ = st.columns([1,2])
             with col_pf:
-                st.markdown("#### 🔒 Cambiar contrasena")
+                st.markdown("#### 🔒 Cambiar contraseña")
                 with st.form("p"):
-                    n1 = st.text_input("Nueva contrasena",type="password")
-                    n2 = st.text_input("Repetir contrasena",type="password")
-                    st.markdown("<br>",unsafe_allow_html=True)
-                    if st.form_submit_button("CAMBIAR CONTRASENA",use_container_width=True):
+                    n1 = st.text_input("Nueva contraseña", type="password")
+                    n2 = st.text_input("Repetir contrasena", type="password")
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.form_submit_button("CAMBIAR CONTRASEÑA", use_container_width=True):
                         if n1!=n2: st.error("No coinciden")
                         elif len(n1)<=3: st.warning("Minimo 4 caracteres")
                         else:
                             df_u = data['users'].copy()
                             df_u.loc[df_u['email']==user['email'],'password'] = n1
                             write_ws("Users", df_u)
-                            st.success("Contrasena actualizada. Reingrsa.")
-                            st.session_state.clear(); st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
+                            st.success("Contraseña actualizada. Reingresa.")
+                            st.session_state.clear(); st.cache_data.clear(); st.rerun()
 
         with tab_pf2:
             st.markdown("#### 📱 Personalizar mensaje de recordatorio WhatsApp")
-            info_html = (
-                "<div style='background:#F0FFF4; border-left:4px solid #2ECC71; "
-                "border-radius:8px; padding:12px 16px; margin-bottom:12px;'>"
-                "<b>Variables disponibles:</b><br>"
-                "<code>{nombre}</code> = nombre del deudor &nbsp; "
-                "<code>{monto}</code> = monto pendiente"
-                "</div>"
-            )
-            st.markdown(info_html, unsafe_allow_html=True)
             tpl_default = "Hola {nombre}! Te recordamos que tenes un pago pendiente de {monto}. Muchas gracias!"
-            # Clave unica por usuario para no mezclar templates entre clientes
-            tpl_key    = f"wa_template_{user['email']}"
-            tpl_actual = st.session_state.get(tpl_key,
-                         st.session_state.get('wa_template', tpl_default))
+            tpl_key     = f"wa_template_{user['email']}"
+            tpl_actual  = st.session_state.get(tpl_key, st.session_state.get('wa_template', tpl_default))
             col_wa1, col_wa2 = st.columns([3,2])
             with col_wa1:
-                nuevo_tpl = st.text_area(
-                    "Texto del mensaje:",
-                    value=tpl_actual,
-                    height=130,
-                    help="Usa {nombre} y {monto} como variables automaticas."
-                )
+                nuevo_tpl = st.text_area("Texto del mensaje:", value=tpl_actual, height=130,
+                    help="Usa {nombre} y {monto} como variables automaticas.")
                 if st.button("Guardar mensaje de forma permanente", use_container_width=True):
-                    # Guardar en session (sesion actual)
                     st.session_state[tpl_key] = nuevo_tpl
                     st.session_state['wa_template'] = nuevo_tpl
-                    # Guardar en hoja Users del Sheet (permanente)
                     df_u = data['users'].copy()
-                    if 'wa_template' not in df_u.columns:
-                        df_u['wa_template'] = ''
+                    if 'wa_template' not in df_u.columns: df_u['wa_template'] = ''
                     df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = nuevo_tpl
                     write_ws("Users", df_u)
-                    st.cache_data.clear(); st.session_state.pop('data_cache', None)
-                    st.success("Mensaje guardado de forma permanente en tu perfil!")
+                    st.cache_data.clear()
+                    st.success("Mensaje guardado!")
                 if st.button("Restaurar mensaje por defecto", use_container_width=True):
                     st.session_state[tpl_key] = tpl_default
                     st.session_state['wa_template'] = tpl_default
-                    df_u = data['users'].copy()
-                    if 'wa_template' not in df_u.columns:
-                        df_u['wa_template'] = ''
-                    df_u.loc[df_u['email'].astype(str).str.lower().str.strip()==user['email'],'wa_template'] = tpl_default
-                    write_ws("Users", df_u)
-                    st.cache_data.clear(); st.session_state.pop('data_cache', None)
                     st.rerun()
             with col_wa2:
                 st.markdown("##### Vista previa")
                 preview = nuevo_tpl.replace("{nombre}", "Juan Perez").replace("{monto}", "$ 15.000")
-                bubble = (
-                    "<div style='background:#DCF8C6; border-radius:12px 12px 3px 12px;"
-                    "padding:12px 16px; font-size:0.9rem; color:#1A252F;"
-                    "box-shadow:0 2px 6px rgba(0,0,0,0.12); max-width:280px; margin-top:8px;'>"
+                st.markdown(
+                    f"<div style='background:#DCF8C6; border-radius:12px 12px 3px 12px;"
+                    f"padding:12px 16px; font-size:0.9rem; color:#1A252F;"
+                    f"box-shadow:0 2px 6px rgba(0,0,0,0.12); max-width:280px; margin-top:8px;'>"
                     + preview +
-                    "</div>"
-                    "<div style='color:#95A5A6; font-size:0.75rem; margin-top:4px;"
-                    "text-align:right; max-width:280px;'>Enviado</div>"
-                )
-                st.markdown(bubble, unsafe_allow_html=True)
-            st.info("El mensaje queda guardado en tu perfil de forma permanente.")
+                    "</div><div style='color:#95A5A6; font-size:0.75rem; margin-top:4px;"
+                    "text-align:right; max-width:280px;'>Enviado</div>",
+                    unsafe_allow_html=True)
+
+        # ── TAB FRASE SEMANAL (solo admin) ──
+        if es_admin:
+            with tab_pf3:
+                st.markdown("#### ✨ Frase semanal para los clientes")
+                st.markdown("""
+                <div style='background:#F0F7FF; border-left:4px solid #1B4F8A;
+                            border-radius:8px; padding:10px 14px; margin-bottom:12px; font-size:0.85rem;'>
+                Al guardar, la frase aparece como <strong>popup al ingresar</strong> y queda
+                visible en la parte superior del dashboard de cada cliente durante toda la semana.
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Leer frase actual del Config sheet (columna 'frase_semanal', fila 1)
+                frase_actual = st.session_state.get('frase_semanal_admin', '')
+                if not frase_actual:
+                    try:
+                        if 'frase_semanal' in df_config.columns:
+                            _f = df_config['frase_semanal'].dropna()
+                            frase_actual = str(_f.iloc[0]) if not _f.empty else ''
+                    except Exception:
+                        frase_actual = ''
+
+                col_fr1, col_fr2 = st.columns([3,2])
+                with col_fr1:
+                    nueva_frase = st.text_area(
+                        "✏️ Escribí la frase de esta semana:",
+                        value=frase_actual, height=120,
+                        placeholder="Ej: El éxito financiero no es un destino, es un hábito diario. ¡Vamos juntos! 💪"
+                    )
+                    autor_frase = st.text_input("Autor / Firma (opcional):",
+                        placeholder="Ej: — Tu contadora, Jessica")
+
+                    if st.button("💾 Publicar frase de la semana", use_container_width=True, key="btn_pub_frase"):
+                        frase_completa = nueva_frase
+                        if autor_frase:
+                            frase_completa = nueva_frase + f"\n\n— {autor_frase}"
+                        # Guardar en Config sheet
+                        try:
+                            df_cfg_upd = df_config.copy()
+                            if 'frase_semanal' not in df_cfg_upd.columns:
+                                df_cfg_upd['frase_semanal'] = ''
+                            df_cfg_upd.loc[0, 'frase_semanal'] = frase_completa
+                            write_ws("Config", df_cfg_upd)
+                            st.session_state['frase_semanal_admin'] = frase_completa
+                            st.cache_data.clear()
+                            st.session_state.pop('data_cache', None)
+                            st.success("✅ Frase publicada! Los clientes la verán al ingresar.")
+                        except Exception as _e:
+                            st.error(f"Error al guardar: {_e}")
+
+                    if st.button("🗑️ Quitar frase", use_container_width=True, key="btn_del_frase"):
+                        try:
+                            df_cfg_upd = df_config.copy()
+                            if 'frase_semanal' in df_cfg_upd.columns:
+                                df_cfg_upd['frase_semanal'] = ''
+                            write_ws("Config", df_cfg_upd)
+                            st.session_state['frase_semanal_admin'] = ''
+                            st.cache_data.clear()
+                            st.session_state.pop('data_cache', None)
+                            st.success("Frase quitada.")
+                        except Exception as _e:
+                            st.error(f"Error: {_e}")
+
+                with col_fr2:
+                    st.markdown("##### 👁️ Vista previa del popup")
+                    _prev_frase = nueva_frase if nueva_frase else "Tu frase aparecerá aquí..."
+                    _prev_autor = f"\n\n— {autor_frase}" if autor_frase else ""
+                    st.markdown(f"""
+                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:16px; padding:24px 20px; text-align:center;
+                                box-shadow:0 8px 24px rgba(27,79,138,0.35); margin-top:8px;'>
+                        <div style='font-size:1.8rem; margin-bottom:8px;'>✨</div>
+                        <p style='color:white; font-size:0.95rem; font-style:italic;
+                                  line-height:1.6; margin:0;'>{_prev_frase}</p>
+                        <p style='color:#BDC3C7; font-size:0.8rem; margin:12px 0 0 0;'>{_prev_autor.replace(chr(10),'')}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
