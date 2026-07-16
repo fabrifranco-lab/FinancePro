@@ -463,8 +463,31 @@ else:
 
         st.markdown("---")
         menu  = st.radio("📌 MENÚ", ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"])
-        st.markdown("**🗓️ PERÍODO:**")
-        rango = st.date_input("", [date.today().replace(day=1), date.today()], label_visibility="collapsed")
+        st.markdown(
+            '<p style="color:#F0F4FF; font-weight:700; font-size:0.82rem; '
+            'letter-spacing:0.06em; margin:4px 0 4px 0; text-shadow:0 1px 3px rgba(0,0,0,0.5);">'
+            '🗓️ PERÍODO:</p>', unsafe_allow_html=True)
+        # Atajos rápidos de período
+        _hoy = date.today()
+        _pc1,_pc2,_pc3,_pc4 = st.columns(4)
+        if _pc1.button("1M",  use_container_width=True, key="per_1m"):
+            st.session_state['rango_sel'] = [_hoy.replace(day=1), _hoy]
+        if _pc2.button("3M",  use_container_width=True, key="per_3m"):
+            _d = (_hoy.replace(day=1) if _hoy.month > 3
+                  else date(_hoy.year-1, _hoy.month+9, 1))
+            _d = date(_hoy.year if _hoy.month > 3 else _hoy.year-1,
+                      (_hoy.month-3) if _hoy.month > 3 else (_hoy.month+9), 1)
+            st.session_state['rango_sel'] = [_d, _hoy]
+        if _pc3.button("6M",  use_container_width=True, key="per_6m"):
+            _d6 = date(_hoy.year if _hoy.month > 6 else _hoy.year-1,
+                       (_hoy.month-6) if _hoy.month > 6 else (_hoy.month+6), 1)
+            st.session_state['rango_sel'] = [_d6, _hoy]
+        if _pc4.button("Año", use_container_width=True, key="per_año"):
+            st.session_state['rango_sel'] = [date(_hoy.year, 1, 1), _hoy]
+        _rango_default = st.session_state.get('rango_sel', [_hoy.replace(day=1), _hoy])
+        rango = st.date_input("Periodo", _rango_default, label_visibility="collapsed", key="rango_input")
+        if isinstance(rango,(list,tuple)) and len(rango)==2:
+            st.session_state['rango_sel'] = list(rango)
         st.markdown("---")
         rol_label = "ADMIN" if es_admin else "CLIENTE"
         st.markdown(f"""
@@ -555,16 +578,19 @@ else:
     # Medios de pago: columna D del Config, ignorar vacíos y guiones
     medios_col = 'medios' if 'medios' in df_config.columns else None
     if medios_col:
-        # Normalizar: Title Case + deduplicar (evita cheque/Cheque/CHEQUE duplicados)
-        _raw_medios = [str(m).strip().title() for m in df_config[medios_col].dropna().unique().tolist()
+        # Normalizar: Title Case + deduplicar case-insensitive
+        # Solo los medios que realmente tiene habilitados este cliente en Config
+        _cfg_cli = df_config_cliente if 'df_config_cliente' in locals() else df_config
+        _raw_medios = [str(m).strip().title() for m in _cfg_cli[medios_col].dropna().unique().tolist()
                        if str(m).strip() not in ('', 'nan', '-')]
-        # Preservar orden y deduplicar case-insensitive
         _seen = set()
         medios = []
         for _m in _raw_medios:
             if _m.lower() not in _seen:
                 _seen.add(_m.lower())
                 medios.append(_m)
+        if not medios:  # fallback si el cliente no tiene medios configurados
+            medios = ["Efectivo", "Transferencia", "A cuenta"]
     else:
         medios = ["Efectivo", "Transferencia", "A cuenta"]
 
@@ -1297,10 +1323,10 @@ else:
         # EXPORTAR REPORTES
         st.divider()
         per_str_f = f"{rango[0].strftime('%Y%m%d')}_{rango[1].strftime('%Y%m%d')}" if isinstance(rango,(list,tuple)) else "periodo"
-        _col_pdf, _col_xls = st.columns(2)
-
-        # Botón PDF
-        with _col_pdf:
+        st.markdown("---")
+        _rb1, _rb2 = st.columns(2)
+        # PDF
+        with _rb1:
             try:
                 _pdf_buf = generar_pdf(df_f, df_c, sel_nombre, per_str)
                 st.download_button(
@@ -1311,22 +1337,20 @@ else:
                     use_container_width=True
                 )
             except Exception as _epdf:
-                st.error(f"Error generando PDF: {_epdf}")
-
-        # Botón Excel
-        with _col_xls:
+                st.warning(f"PDF: {str(_epdf)[:80]}")
+        # Excel
+        with _rb2:
             try:
                 _exp_buf, _exp_ext, _exp_mime = generar_excel(df_f, df_c, sel_nombre, per_str)
-                _exp_label = "📊 Descargar Reporte Excel" if _exp_ext=="xlsx" else "📊 Descargar CSV"
                 st.download_button(
-                    label=_exp_label,
+                    label="📊 Descargar Reporte Excel" if _exp_ext=="xlsx" else "📊 Descargar CSV",
                     data=_exp_buf,
                     file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.{_exp_ext}",
                     mime=_exp_mime,
                     use_container_width=True
                 )
             except Exception as _exls:
-                st.warning(f"Excel no disponible: {_exls}")
+                st.warning(f"Excel: {str(_exls)[:80]}")
 
     # ══════════════════════════════════════════
     # MOVIMIENTOS
