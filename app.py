@@ -880,46 +880,34 @@ else:
         # ── FRASE SEMANAL ──
         _frase = get_frase_semanal(df_config)
         if _frase and not es_admin:
-            # Popup (solo 1 vez por sesión, se cierra con botón X)
-            _popup_key    = f"frase_vista_{user['email']}"
-            _cerrar_key   = f"frase_cerrada_{user['email']}"
-            if (not st.session_state.get(_popup_key, False) and
-                not st.session_state.get(_cerrar_key, False)):
+            # Popup (solo 1 vez por sesión)
+            _popup_key = f"frase_vista_{user['email']}"
+            if not st.session_state.get(_popup_key, False):
                 st.session_state[_popup_key] = True
-                # Fondo oscuro
-                st.markdown("""
-                <div id="popup-overlay" style='position:fixed; top:0; left:0;
-                     width:100%; height:100%; background:rgba(0,0,0,0.65);
-                     z-index:99998;'></div>
+                # Mostrar como diálogo visual con st.empty y JS
+                _popup_placeholder = st.empty()
+                _popup_placeholder.markdown(f"""
+                <div id="frase-popup" onclick="this.style.display='none'"
+                     style='position:fixed; top:0; left:0; width:100%; height:100%;
+                            background:rgba(0,0,0,0.6); z-index:99999;
+                            display:flex; align-items:center; justify-content:center;
+                            cursor:pointer;'>
+                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:20px; padding:40px 36px; max-width:480px;
+                                text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+                                animation:fadeIn 0.4s ease;'>
+                        <div style='font-size:2.5rem; margin-bottom:12px;'>✨</div>
+                        <p style='color:white; font-size:1.05rem; font-style:italic;
+                                  line-height:1.7; margin:0; white-space:pre-line;'>{_frase}</p>
+                        <p style='color:#BDC3C7; font-size:0.78rem; margin:20px 0 0 0;'>
+                            Tocá en cualquier lugar para continuar</p>
+                    </div>
+                </div>
                 <style>
-                @keyframes fadeIn { from { opacity:0; transform:translate(-50%,-55%); }
-                                    to   { opacity:1; transform:translate(-50%,-50%); } }
+                @keyframes fadeIn {{ from {{ opacity:0; transform:scale(0.95); }}
+                                     to   {{ opacity:1; transform:scale(1); }} }}
                 </style>
                 """, unsafe_allow_html=True)
-                # Tarjeta del popup
-                st.markdown(f"""
-                <div style='position:fixed; top:50%; left:50%;
-                            transform:translate(-50%,-50%);
-                            background:linear-gradient(135deg,#1B4F8A,#2980B9);
-                            border-radius:20px; padding:36px 36px 28px 36px;
-                            max-width:460px; width:90%; text-align:center;
-                            box-shadow:0 20px 60px rgba(0,0,0,0.55);
-                            z-index:99999; animation:fadeIn 0.4s ease;'>
-                    <div style='font-size:2.2rem; margin-bottom:10px;'>✨</div>
-                    <p style='color:white; font-size:1rem; font-style:italic;
-                              line-height:1.7; margin:0 0 24px 0;
-                              white-space:pre-line;'>{_frase}</p>
-                    <p style='color:#BDC3C7; font-size:0.75rem; margin:0;'>
-                        Presioná el botón para continuar 👇</p>
-                </div>
-                """, unsafe_allow_html=True)
-                # Botón X centrado debajo de la tarjeta
-                _col_x1, _col_x2, _col_x3 = st.columns([2,1,2])
-                with _col_x2:
-                    if st.button("✕  Cerrar", key="btn_cerrar_popup",
-                                 use_container_width=True):
-                        st.session_state[_cerrar_key] = True
-                        st.rerun()
 
             # Banner fijo en el dashboard (siempre visible)
             _lineas_frase = _frase.split('\n')
