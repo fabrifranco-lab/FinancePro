@@ -884,30 +884,68 @@ else:
             _popup_key = f"frase_vista_{user['email']}"
             if not st.session_state.get(_popup_key, False):
                 st.session_state[_popup_key] = True
-                # Mostrar como diálogo visual con st.empty y JS
-                _popup_placeholder = st.empty()
-                _popup_placeholder.markdown(f"""
-                <div id="frase-popup" onclick="this.style.display='none'"
-                     style='position:fixed; top:0; left:0; width:100%; height:100%;
-                            background:rgba(0,0,0,0.6); z-index:99999;
+                # Popup real via components.v1.html (st.markdown NO ejecuta <script>
+                # ni garantiza el bindeo del onclick de forma confiable)
+                _frase_js = (_frase.replace("\\", "\\\\")
+                                    .replace("`", "\\`")
+                                    .replace("</script", "<\\/script"))
+                _popup_html = f"""
+                <div id="frase-popup"
+                     style="position:fixed; top:0; left:0; width:100vw; height:100vh;
+                            background:rgba(0,0,0,0.6); z-index:2147483647;
                             display:flex; align-items:center; justify-content:center;
-                            cursor:pointer;'>
-                    <div style='background:linear-gradient(135deg,#1B4F8A,#2980B9);
-                                border-radius:20px; padding:40px 36px; max-width:480px;
+                            cursor:pointer; animation:fadeIn 0.3s ease;">
+                    <div id="frase-card" style="background:linear-gradient(135deg,#1B4F8A,#2980B9);
+                                border-radius:20px; padding:40px 36px; max-width:480px; width:88%;
                                 text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.5);
-                                animation:fadeIn 0.4s ease;'>
-                        <div style='font-size:2.5rem; margin-bottom:12px;'>✨</div>
-                        <p style='color:white; font-size:1.05rem; font-style:italic;
-                                  line-height:1.7; margin:0; white-space:pre-line;'>{_frase}</p>
-                        <p style='color:#BDC3C7; font-size:0.78rem; margin:20px 0 0 0;'>
-                            Tocá en cualquier lugar para continuar</p>
+                                cursor:default; position:relative;">
+                        <button id="frase-close" aria-label="Cerrar"
+                                style="position:absolute; top:10px; right:14px; width:32px; height:32px;
+                                       background:rgba(255,255,255,0.15); border:none; border-radius:50%;
+                                       color:white; font-size:1.1rem; cursor:pointer; line-height:1;">✕</button>
+                        <div style="font-size:2.5rem; margin-bottom:12px;">✨</div>
+                        <p style="color:white; font-size:1.05rem; font-style:italic;
+                                  line-height:1.7; margin:0; white-space:pre-line;"></p>
+                        <p style="color:#BDC3C7; font-size:0.78rem; margin:20px 0 0 0;">
+                            Tocá la X o hacé clic afuera para continuar</p>
                     </div>
                 </div>
                 <style>
-                @keyframes fadeIn {{ from {{ opacity:0; transform:scale(0.95); }}
-                                     to   {{ opacity:1; transform:scale(1); }} }}
+                @keyframes fadeIn {{ from {{ opacity:0; }} to {{ opacity:1; }} }}
                 </style>
-                """, unsafe_allow_html=True)
+                <script>
+                (function() {{
+                    var frase = `{_frase_js}`;
+                    document.querySelector('#frase-card p').textContent = frase;
+
+                    var frameEl = window.frameElement;
+                    function expandirIframe() {{
+                        if (frameEl) {{
+                            frameEl.style.position = 'fixed';
+                            frameEl.style.top = '0';
+                            frameEl.style.left = '0';
+                            frameEl.style.width = '100vw';
+                            frameEl.style.height = '100vh';
+                            frameEl.style.zIndex = '2147483647';
+                            frameEl.style.border = 'none';
+                        }}
+                    }}
+                    expandirIframe();
+
+                    function cerrarPopup() {{
+                        var overlay = document.getElementById('frase-popup');
+                        if (overlay) overlay.style.display = 'none';
+                        if (frameEl) frameEl.style.display = 'none';
+                    }}
+
+                    document.getElementById('frase-popup').addEventListener('click', function(e) {{
+                        if (e.target.id === 'frase-popup') cerrarPopup();
+                    }});
+                    document.getElementById('frase-close').addEventListener('click', cerrarPopup);
+                }})();
+                </script>
+                """
+                st.components.v1.html(_popup_html, height=0)
 
             # Banner fijo en el dashboard (siempre visible)
             _lineas_frase = _frase.split('\n')
