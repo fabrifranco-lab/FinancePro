@@ -462,28 +462,37 @@ else:
             cliente_mail, sel_nombre = user['email'].strip().lower(), user['nombre']
 
         st.markdown("---")
-        menu  = st.radio("📌 MENÚ", ["📊 Dashboard","💸 Movimientos","📈 Inversiones","⚙️ Perfil"])
+        menu  = st.radio("📌 MENÚ", ["📊 Panel","💸 Movimientos","📈 Inversiones","⚙️ Perfil"])
         st.markdown(
             '<p style="color:#F0F4FF; font-weight:700; font-size:0.82rem; '
             'letter-spacing:0.06em; margin:4px 0 4px 0; text-shadow:0 1px 3px rgba(0,0,0,0.5);">'
             '🗓️ PERÍODO:</p>', unsafe_allow_html=True)
-        # Atajos rápidos de período
+        # Selección rápida de período (desplegable) + fecha personalizada
         _hoy = date.today()
-        _pc1,_pc2,_pc3,_pc4 = st.columns(4)
-        if _pc1.button("1M",  use_container_width=True, key="per_1m"):
-            st.session_state['rango_sel'] = [_hoy.replace(day=1), _hoy]
-        if _pc2.button("3M",  use_container_width=True, key="per_3m"):
-            _d = (_hoy.replace(day=1) if _hoy.month > 3
-                  else date(_hoy.year-1, _hoy.month+9, 1))
-            _d = date(_hoy.year if _hoy.month > 3 else _hoy.year-1,
-                      (_hoy.month-3) if _hoy.month > 3 else (_hoy.month+9), 1)
-            st.session_state['rango_sel'] = [_d, _hoy]
-        if _pc3.button("6M",  use_container_width=True, key="per_6m"):
-            _d6 = date(_hoy.year if _hoy.month > 6 else _hoy.year-1,
-                       (_hoy.month-6) if _hoy.month > 6 else (_hoy.month+6), 1)
-            st.session_state['rango_sel'] = [_d6, _hoy]
-        if _pc4.button("Año", use_container_width=True, key="per_año"):
-            st.session_state['rango_sel'] = [date(_hoy.year, 1, 1), _hoy]
+
+        def _restar_meses(f, n):
+            _m = f.month - n
+            _y = f.year
+            while _m <= 0:
+                _m += 12
+                _y -= 1
+            return date(_y, _m, 1)
+
+        _OPCIONES_PERIODO = ["Personalizado","Este mes","Últimos 3 meses","Últimos 6 meses","Este año"]
+
+        def _rango_por_opcion(op):
+            if op == "Este mes":          return [_hoy.replace(day=1), _hoy]
+            if op == "Últimos 3 meses":    return [_restar_meses(_hoy, 3), _hoy]
+            if op == "Últimos 6 meses":    return [_restar_meses(_hoy, 6), _hoy]
+            if op == "Este año":           return [date(_hoy.year, 1, 1), _hoy]
+            return None
+
+        _periodo_sel = st.selectbox("Rango rápido:", _OPCIONES_PERIODO,
+                                     key="periodo_rapido_sel", label_visibility="collapsed")
+
+        if _periodo_sel != "Personalizado":
+            st.session_state['rango_sel'] = _rango_por_opcion(_periodo_sel)
+
         _rango_default = st.session_state.get('rango_sel', [_hoy.replace(day=1), _hoy])
         rango = st.date_input("Periodo", _rango_default, label_visibility="collapsed", key="rango_input")
         if isinstance(rango,(list,tuple)) and len(rango)==2:
@@ -843,7 +852,7 @@ else:
     # ══════════════════════════════════════════
     # DASHBOARD
     # ══════════════════════════════════════════
-    if menu == "📊 Dashboard":
+    if menu == "📊 Panel":
         # Métricas del PERÍODO seleccionado
         ing    = df_f[df_f['tipo']=='Ingreso']['monto'].sum()
         gas    = df_f[df_f['tipo']=='Gasto']['monto'].sum()
@@ -875,7 +884,7 @@ else:
         inv_total = pd.to_numeric(inv_m['monto'],errors='coerce').sum() if not inv_m.empty and 'monto' in inv_m.columns else 0
 
         per_str = f"{rango[0].strftime('%d/%m/%Y')} - {rango[1].strftime('%d/%m/%Y')}" if isinstance(rango,(list,tuple)) else ""
-        st.markdown(f'<div class="page-header"><div><h2>📊 Dashboard Financiero</h2><span>{sel_nombre} · {per_str}</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="page-header"><div><h2>📊 Panel Financiero</h2><span>{sel_nombre} · {per_str}</span></div></div>', unsafe_allow_html=True)
 
         # ── FRASE SEMANAL ──
         _frase = get_frase_semanal(df_config)
@@ -967,20 +976,20 @@ else:
 
         # Métricas fila 1
         m1,m2,m3,m4,m5 = st.columns(5)
-        m1.metric("💰 INGRESOS",    fmt_ar_m(ing))
-        m2.metric("💸 GASTOS",      fmt_ar_m(gas))
-        m3.metric("🔒 G. FIJOS",    fmt_ar_m(gas_f))
-        m4.metric("📊 G. VARIABLES",fmt_ar_m(gas_v))
-        m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else None)
+        m1.metric("💰 INGRESOS",    fmt_ar_m(ing), delta="")
+        m2.metric("💸 GASTOS",      fmt_ar_m(gas), delta="")
+        m3.metric("🔒 G. FIJOS",    fmt_ar_m(gas_f), delta="")
+        m4.metric("📊 G. VARIABLES",fmt_ar_m(gas_v), delta="")
+        m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else "")
 
         # Métricas fila 2
         m6,m7,m8,_ = st.columns(4)
         m6.metric("🏦 CAJA REAL",  fmt_ar_m(caja),
-                   delta=f"-{fmt_ar(pend_t)} pend." if pend_t else None,
+                   delta=f"-{fmt_ar(pend_t)} pend." if pend_t else "",
                    help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
-        m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t),
+        m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t), delta="",
                    help="Cobros pendientes de tus clientes")
-        m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total))
+        m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total), delta="")
         if gas_comprometido > 0:
             st.markdown(
                 f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
@@ -1182,6 +1191,28 @@ else:
 
         st.divider()
 
+        # ── TOTAL POR MEDIO DE PAGO (para facturación) ──
+        st.markdown("#### 💳 Total por Medio de Pago (para facturación)")
+        df_ing_periodo = df_f[df_f['tipo']=='Ingreso'].copy()
+        _medios_fact_disp = sorted(df_ing_periodo['medio'].dropna().unique().tolist())
+        if _medios_fact_disp:
+            _medios_sel_fact = st.multiselect(
+                "Seleccioná uno o más medios de pago — el total se suma automáticamente:",
+                _medios_fact_disp, default=_medios_fact_disp, key="medios_fact_sel")
+            df_fact_sel = df_ing_periodo[df_ing_periodo['medio'].isin(_medios_sel_fact)] if _medios_sel_fact else df_ing_periodo.iloc[0:0]
+            _total_fact = df_fact_sel['monto'].sum()
+            st.metric(f"💰 Total seleccionado ({len(_medios_sel_fact)} medio/s)", fmt_ar(_total_fact), delta="")
+
+            _tabla_medios = df_ing_periodo.groupby('medio')['monto'].agg(['sum','count']).reset_index()
+            _tabla_medios.columns = ['Medio de pago','Monto','Cant. Movimientos']
+            _tabla_medios = _tabla_medios.sort_values('Monto', ascending=False)
+            _tabla_medios['Monto'] = _tabla_medios['Monto'].apply(fmt_ar)
+            st.dataframe(_tabla_medios, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin ingresos en el período para desglosar por medio de pago.")
+
+        st.divider()
+
         # FILTRO NATURALEZA GASTOS
         filtro_nat = st.radio("🔍 Ver gastos:", ["Todos","Solo Fijos","Solo Variables"], horizontal=True)
         df_gastos_vis = df_f[df_f['tipo']=='Gasto'].copy()
@@ -1212,12 +1243,35 @@ else:
             )
             st.plotly_chart(fig, use_container_width=True, key=f"donut_{key_sfx}")
             with st.expander(f"📋 Detalle — {titulo}"):
-                grp_det = df_tipo.groupby(['categoria','medio'])['monto'].sum().reset_index()
-                grp_det['%'] = (grp_det['monto']/total*100).round(1).astype(str)+'%'
-                grp_det['Monto'] = grp_det['monto'].apply(fmt_ar)
-                st.dataframe(grp_det[['categoria','medio','Monto','%']].rename(
-                    columns={'categoria':'Categoría','medio':'Medio','%':'Part.'}
-                ).sort_values('Monto',ascending=False), use_container_width=True, hide_index=True)
+                grp_det = df_tipo.groupby(['categoria','medio']).agg(
+                    monto=('monto','sum'), unidades=('monto','count')
+                ).reset_index()
+
+                # Filtros por categoría y medio de pago
+                ffc1, ffc2 = st.columns(2)
+                _cats_disp  = sorted(grp_det['categoria'].dropna().unique().tolist())
+                _meds_disp  = sorted(grp_det['medio'].dropna().unique().tolist())
+                _f_cats = ffc1.multiselect("Filtrar categoría:", _cats_disp, key=f"filt_cat_{key_sfx}")
+                _f_meds = ffc2.multiselect("Filtrar medio de pago:", _meds_disp, key=f"filt_med_{key_sfx}")
+
+                grp_det_f = grp_det.copy()
+                if _f_cats: grp_det_f = grp_det_f[grp_det_f['categoria'].isin(_f_cats)]
+                if _f_meds: grp_det_f = grp_det_f[grp_det_f['medio'].isin(_f_meds)]
+
+                _total_f = grp_det_f['monto'].sum()
+                _unid_f  = grp_det_f['unidades'].sum()
+                grp_det_f = grp_det_f.sort_values('monto', ascending=False).copy()
+                grp_det_f['%'] = (grp_det_f['monto']/total*100).round(1).astype(str)+'%' if total else '0%'
+                grp_det_f['Monto'] = grp_det_f['monto'].apply(fmt_ar)
+
+                _tabla_det = grp_det_f[['categoria','medio','unidades','Monto','%']].rename(
+                    columns={'categoria':'Categoría','medio':'Medio','unidades':'Un.','%':'Part.'})
+                _fila_total = pd.DataFrame([{
+                    'Categoría':'TOTAL', 'Medio':'', 'Un.':_unid_f,
+                    'Monto':fmt_ar(_total_f), 'Part.':'100%' if not (_f_cats or _f_meds) else ''
+                }])
+                st.dataframe(pd.concat([_tabla_det, _fila_total], ignore_index=True),
+                    use_container_width=True, hide_index=True)
                 fig_bar = px.bar(grp.sort_values('monto'), x='monto', y='categoria', orientation='h',
                     color='monto', color_continuous_scale=[[0,color_seq[0]],[1,color_seq[min(3,len(color_seq)-1)]]],
                     text=grp.sort_values('monto')['monto'].apply(fmt_ar),
@@ -1261,46 +1315,67 @@ else:
                 st.plotly_chart(fig_fv,use_container_width=True,key="fv_bar")
             with cfv2:
                 df_fv_d = df_gas_nat.groupby(['naturaleza','categoria'])['monto'].sum().reset_index()
-                df_fv_d['Monto'] = df_fv_d['monto'].apply(fmt_ar)
-                df_fv_d['%'] = (df_fv_d['monto']/df_gas_nat['monto'].sum()*100).round(1).astype(str)+'%'
                 st.markdown("#### 📋 Detalle Fijo / Variable")
-                st.dataframe(df_fv_d[['naturaleza','categoria','Monto','%']].rename(
-                    columns={'naturaleza':'Naturaleza','categoria':'Categoría','%':'Part.'}
-                ).sort_values(['Naturaleza','Monto'],ascending=[True,False]),
-                use_container_width=True,hide_index=True)
 
-        # GRÁFICO COMBINADO MENSUAL
-        st.divider()
-        if not df_f.empty:
-            df_cp = df_f.copy()
-            df_cp['Mes'] = df_cp['fecha_dt'].dt.to_period('M').dt.to_timestamp()
-            df_mes_piv = df_cp.groupby(['Mes','tipo'])['monto'].sum().reset_index()\
-                .pivot(index='Mes',columns='tipo',values='monto').fillna(0).reset_index()
-            if not df_mes_piv.empty:
-                fig_cb = go.Figure()
-                if 'Ingreso' in df_mes_piv:
-                    fig_cb.add_trace(go.Bar(x=df_mes_piv['Mes'],y=df_mes_piv['Ingreso'],name='Ingresos',
-                        marker_color=COLORS['primary'],
-                        hovertemplate='<b>Ingresos</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
-                if 'Gasto' in df_mes_piv:
-                    fig_cb.add_trace(go.Bar(x=df_mes_piv['Mes'],y=df_mes_piv['Gasto'],name='Gastos',
-                        marker_color=COLORS['danger'],
-                        hovertemplate='<b>Gastos</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
-                if 'Ingreso' in df_mes_piv and 'Gasto' in df_mes_piv:
-                    df_mes_piv['Utilidad'] = df_mes_piv['Ingreso'] - df_mes_piv['Gasto']
-                    fig_cb.add_trace(go.Scatter(x=df_mes_piv['Mes'],y=df_mes_piv['Utilidad'],
-                        name='Utilidad Neta',mode='lines+markers',
-                        line=dict(color=COLORS['secondary'],width=3,dash='dot'),
-                        marker=dict(size=8,symbol='diamond'),
-                        hovertemplate='<b>Utilidad</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
-                fig_cb.update_layout(
-                    title=dict(text="<b>Evolución Mensual — Ingresos vs Gastos</b>",font=dict(size=14,color=COLORS['text'])),
-                    barmode='group',paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',
-                    xaxis=dict(dtick="M1",tickformat="%b\n%Y",gridcolor='#ECF0F1'),
-                    yaxis=dict(gridcolor='#ECF0F1',tickprefix='$'),
-                    legend=dict(orientation='h',y=-0.2),hovermode='x unified',
-                    margin=dict(t=50,b=70),height=360)
-                st.plotly_chart(fig_cb,use_container_width=True,key="combo_mensual")
+                # Filtros por columna
+                ffv1, ffv2 = st.columns(2)
+                _nat_disp = sorted(df_fv_d['naturaleza'].dropna().unique().tolist())
+                _cat_disp = sorted(df_fv_d['categoria'].dropna().unique().tolist())
+                _f_nat = ffv1.multiselect("Filtrar naturaleza:", _nat_disp, key="filt_nat_fv")
+                _f_cat = ffv2.multiselect("Filtrar categoría:", _cat_disp, key="filt_cat_fv")
+
+                df_fv_f = df_fv_d.copy()
+                if _f_nat: df_fv_f = df_fv_f[df_fv_f['naturaleza'].isin(_f_nat)]
+                if _f_cat: df_fv_f = df_fv_f[df_fv_f['categoria'].isin(_f_cat)]
+
+                _total_fv = df_fv_f['monto'].sum()
+                df_fv_f = df_fv_f.sort_values(['naturaleza','monto'],ascending=[True,False]).copy()
+                df_fv_f['%'] = (df_fv_f['monto']/df_gas_nat['monto'].sum()*100).round(1).astype(str)+'%' if df_gas_nat['monto'].sum() else '0%'
+                df_fv_f['Monto'] = df_fv_f['monto'].apply(fmt_ar)
+
+                _tabla_fv = df_fv_f[['naturaleza','categoria','Monto','%']].rename(
+                    columns={'naturaleza':'Naturaleza','categoria':'Categoría','%':'Part.'})
+                # Fila de totales fija al final (la tabla es larga -> mantenemos el header sticky con height fijo)
+                _fila_total_fv = pd.DataFrame([{
+                    'Naturaleza':'TOTAL','Categoría':'', 'Monto':fmt_ar(_total_fv),
+                    'Part.':'100%' if not (_f_nat or _f_cat) else ''
+                }])
+                st.dataframe(pd.concat([_tabla_fv, _fila_total_fv], ignore_index=True),
+                    use_container_width=True, hide_index=True, height=360)
+
+        # GRÁFICO COMBINADO MENSUAL — solo admin
+        if es_admin:
+            st.divider()
+            if not df_f.empty:
+                df_cp = df_f.copy()
+                df_cp['Mes'] = df_cp['fecha_dt'].dt.to_period('M').dt.to_timestamp()
+                df_mes_piv = df_cp.groupby(['Mes','tipo'])['monto'].sum().reset_index()\
+                    .pivot(index='Mes',columns='tipo',values='monto').fillna(0).reset_index()
+                if not df_mes_piv.empty:
+                    fig_cb = go.Figure()
+                    if 'Ingreso' in df_mes_piv:
+                        fig_cb.add_trace(go.Bar(x=df_mes_piv['Mes'],y=df_mes_piv['Ingreso'],name='Ingresos',
+                            marker_color=COLORS['primary'],
+                            hovertemplate='<b>Ingresos</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
+                    if 'Gasto' in df_mes_piv:
+                        fig_cb.add_trace(go.Bar(x=df_mes_piv['Mes'],y=df_mes_piv['Gasto'],name='Gastos',
+                            marker_color=COLORS['danger'],
+                            hovertemplate='<b>Gastos</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
+                    if 'Ingreso' in df_mes_piv and 'Gasto' in df_mes_piv:
+                        df_mes_piv['Utilidad'] = df_mes_piv['Ingreso'] - df_mes_piv['Gasto']
+                        fig_cb.add_trace(go.Scatter(x=df_mes_piv['Mes'],y=df_mes_piv['Utilidad'],
+                            name='Utilidad Neta',mode='lines+markers',
+                            line=dict(color=COLORS['secondary'],width=3,dash='dot'),
+                            marker=dict(size=8,symbol='diamond'),
+                            hovertemplate='<b>Utilidad</b> %{x|%b %Y}: $%{y:,.0f}<extra></extra>'))
+                    fig_cb.update_layout(
+                        title=dict(text="<b>Evolución Mensual — Ingresos vs Gastos</b>",font=dict(size=14,color=COLORS['text'])),
+                        barmode='group',paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='rgba(0,0,0,0)',
+                        xaxis=dict(dtick="M1",tickformat="%b\n%Y",gridcolor='#ECF0F1'),
+                        yaxis=dict(gridcolor='#ECF0F1',tickprefix='$'),
+                        legend=dict(orientation='h',y=-0.2),hovermode='x unified',
+                        margin=dict(t=50,b=70),height=360)
+                    st.plotly_chart(fig_cb,use_container_width=True,key="combo_mensual")
 
         # TENDENCIA + PROYECCIÓN — solo admin
         if es_admin:
@@ -1358,37 +1433,38 @@ else:
             else:
                 st.info("Sin datos históricos de ingresos para este cliente.")
 
-        # EXPORTAR REPORTES
-        st.divider()
-        per_str_f = f"{rango[0].strftime('%Y%m%d')}_{rango[1].strftime('%Y%m%d')}" if isinstance(rango,(list,tuple)) else "periodo"
-        st.markdown("---")
-        _rb1, _rb2 = st.columns(2)
-        # PDF
-        with _rb1:
-            try:
-                _pdf_buf = generar_pdf(df_f, df_c, sel_nombre, per_str)
-                st.download_button(
-                    label="📄 Descargar Reporte PDF",
-                    data=_pdf_buf,
-                    file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except Exception as _epdf:
-                st.warning(f"PDF: {str(_epdf)[:80]}")
-        # Excel
-        with _rb2:
-            try:
-                _exp_buf, _exp_ext, _exp_mime = generar_excel(df_f, df_c, sel_nombre, per_str)
-                st.download_button(
-                    label="📊 Descargar Reporte Excel" if _exp_ext=="xlsx" else "📊 Descargar CSV",
-                    data=_exp_buf,
-                    file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.{_exp_ext}",
-                    mime=_exp_mime,
-                    use_container_width=True
-                )
-            except Exception as _exls:
-                st.warning(f"Excel: {str(_exls)[:80]}")
+        # EXPORTAR REPORTES — SOLO ADMIN
+        if es_admin:
+            st.divider()
+            per_str_f = f"{rango[0].strftime('%Y%m%d')}_{rango[1].strftime('%Y%m%d')}" if isinstance(rango,(list,tuple)) else "periodo"
+            st.markdown("---")
+            _rb1, _rb2 = st.columns(2)
+            # PDF
+            with _rb1:
+                try:
+                    _pdf_buf = generar_pdf(df_f, df_c, sel_nombre, per_str)
+                    st.download_button(
+                        label="📄 Descargar Reporte PDF",
+                        data=_pdf_buf,
+                        file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                except Exception as _epdf:
+                    st.warning(f"PDF: {str(_epdf)[:80]}")
+            # Excel
+            with _rb2:
+                try:
+                    _exp_buf, _exp_ext, _exp_mime = generar_excel(df_f, df_c, sel_nombre, per_str)
+                    st.download_button(
+                        label="📊 Descargar Reporte Excel" if _exp_ext=="xlsx" else "📊 Descargar CSV",
+                        data=_exp_buf,
+                        file_name=f"FinancePRO_{sel_nombre.replace(' ','_')}_{per_str_f}.{_exp_ext}",
+                        mime=_exp_mime,
+                        use_container_width=True
+                    )
+                except Exception as _exls:
+                    st.warning(f"Excel: {str(_exls)[:80]}")
 
     # ══════════════════════════════════════════
     # MOVIMIENTOS
@@ -1556,7 +1632,7 @@ else:
                             step=1000.0, key="monto_parcial_field")
                         fecha_parcial_v = pp2.date_input("📅 Vencimiento del resto",
                             key="fecha_parcial_field").strftime('%d/%m/%Y')
-                        pp3.metric("Resto diferido", fmt_ar(max(0, mon_v - monto_parcial_v)))
+                        pp3.metric("Resto diferido", fmt_ar(max(0, mon_v - monto_parcial_v)), delta="")
 
                 # ── BLOQUE 2: 2° cobro/pago (si pago mixto activo) ──
                 mon2_v      = 0.0
@@ -1928,10 +2004,10 @@ else:
                 st.divider()
                 mc1,mc2,mc3,mc4 = st.columns(4)
                 df_rec_pend = df_ch[(df_ch.get('tipo','')=='Cheque Recibido') & (df_ch.get('estado','Pendiente')!='Depositado')] if not df_ch.empty else pd.DataFrame()
-                mc1.metric("📥 Cheques recibidos", str(len(df_ch[df_ch.get('tipo','')=='Cheque Recibido'])) if 'tipo' in df_ch.columns else "0")
-                mc2.metric("💰 Total a depositar", fmt_ar(df_rec_pend['monto'].sum()) if not df_rec_pend.empty else "$ 0")
-                mc3.metric("📤 Cheques emitidos",  str(len(df_ch[df_ch.get('tipo','')=='Cheque Emitido'])) if 'tipo' in df_ch.columns else "0")
-                mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)))
+                mc1.metric("📥 Cheques recibidos", str(len(df_ch[df_ch.get('tipo','')=='Cheque Recibido'])) if 'tipo' in df_ch.columns else "0", delta="")
+                mc2.metric("💰 Total a depositar", fmt_ar(df_rec_pend['monto'].sum()) if not df_rec_pend.empty else "$ 0", delta="")
+                mc3.metric("📤 Cheques emitidos",  str(len(df_ch[df_ch.get('tipo','')=='Cheque Emitido'])) if 'tipo' in df_ch.columns else "0", delta="")
+                mc4.metric("⚠️ Próximos a vencer", str(len(df_prox)), delta="")
 
     # ══════════════════════════════════════════
     # ══════════════════════════════════════════
@@ -1950,11 +2026,11 @@ else:
         tot_inv = regs['monto'].sum() if not regs.empty and 'monto' in regs.columns else 0
         if tot_inv > 0:
             mi1,mi2,mi3,_ = st.columns(4)
-            mi1.metric("📦 TOTAL INVERTIDO", fmt_ar(tot_inv))
+            mi1.metric("📦 TOTAL INVERTIDO", fmt_ar(tot_inv), delta="")
             if not regs.empty and 'rentabilidad' in regs.columns:
                 _rv = pd.to_numeric(regs['rentabilidad'],errors='coerce').dropna()
-                mi2.metric("📈 RENT. PROM.", f"{_rv.mean():.1f}%" if not _rv.empty else "N/A")
-            mi3.metric("🔢 POSICIONES", str(len(regs)))
+                mi2.metric("📈 RENT. PROM.", f"{_rv.mean():.1f}%" if not _rv.empty else "N/A", delta="")
+            mi3.metric("🔢 POSICIONES", str(len(regs)), delta="")
         tabs_inv = st.tabs(["📝 Mis Registros","💡 Recomendaciones"] if not es_admin
                            else ["📝 Registros Cliente","💡 Enviar Recomendación","📊 Resumen Admin"])
         with tabs_inv[0]:
@@ -1978,9 +2054,9 @@ else:
                 for _,r in regs.sort_index(ascending=False).iterrows():
                     ci1,ci2,ci3 = st.columns([2,1,1])
                     ci1.markdown(f'<div class="inv-card"><strong>{r["instrumento"]}</strong><br><small style="color:#95A5A6;">{r["fecha"]}</small></div>', unsafe_allow_html=True)
-                    ci2.metric("Monto",fmt_ar(r['monto']))
+                    ci2.metric("Monto",fmt_ar(r['monto']), delta="")
                     rv = float(r.get('rentabilidad',0)) if pd.notna(r.get('rentabilidad',0)) else 0
-                    ci3.metric("Rentabilidad",f"{rv:.1f}%",delta=f"{rv:.1f}%" if rv!=0 else None)
+                    ci3.metric("Rentabilidad",f"{rv:.1f}%",delta=f"{rv:.1f}%" if rv!=0 else "")
         with tabs_inv[1]:
             if es_admin:
                 st.markdown("#### 📤 Enviar recomendación")
@@ -2002,7 +2078,7 @@ else:
                     for _,r in recs.sort_index(ascending=False).iterrows():
                         with st.expander(f"📊 {r['instrumento']} — {r['fecha']}"):
                             rc1,rc2 = st.columns([1,2])
-                            rc1.metric("Monto sugerido",fmt_ar(r['monto']))
+                            rc1.metric("Monto sugerido",fmt_ar(r['monto']), delta="")
                             rc2.markdown(f"**Análisis:**\n\n{r.get('mensaje','')}")
         if es_admin and len(tabs_inv) > 2:
             with tabs_inv[2]:
@@ -2010,9 +2086,9 @@ else:
                     st.info("El cliente no tiene inversiones registradas.")
                 else:
                     ra1,ra2,ra3 = st.columns(3)
-                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'],errors='coerce').fillna(0).sum()))
-                    ra2.metric("Posiciones", str(len(regs)))
-                    ra3.metric("Recomendaciones", str(len(recs)))
+                    ra1.metric("Total Invertido", fmt_ar(pd.to_numeric(regs['monto'],errors='coerce').fillna(0).sum()), delta="")
+                    ra2.metric("Posiciones", str(len(regs)), delta="")
+                    ra3.metric("Recomendaciones", str(len(recs)), delta="")
 
     # ══════════════════════════════════════════
     # PERFIL
