@@ -1247,12 +1247,14 @@ else:
                     monto=('monto','sum'), unidades=('monto','count')
                 ).reset_index()
 
-                # Filtros por categoría y medio de pago
-                ffc1, ffc2 = st.columns(2)
+                # Filtros por categoría y medio de pago (ocultos en un popover junto al título)
                 _cats_disp  = sorted(grp_det['categoria'].dropna().unique().tolist())
                 _meds_disp  = sorted(grp_det['medio'].dropna().unique().tolist())
-                _f_cats = ffc1.multiselect("Filtrar categoría:", _cats_disp, key=f"filt_cat_{key_sfx}")
-                _f_meds = ffc2.multiselect("Filtrar medio de pago:", _meds_disp, key=f"filt_med_{key_sfx}")
+                _hcol1, _hcol2 = st.columns([5,1])
+                with _hcol2:
+                    with st.popover("🔍 Filtros", use_container_width=True):
+                        _f_cats = st.multiselect("Filtrar categoría:", _cats_disp, key=f"filt_cat_{key_sfx}")
+                        _f_meds = st.multiselect("Filtrar medio de pago:", _meds_disp, key=f"filt_med_{key_sfx}")
 
                 grp_det_f = grp_det.copy()
                 if _f_cats: grp_det_f = grp_det_f[grp_det_f['categoria'].isin(_f_cats)]
@@ -1266,12 +1268,20 @@ else:
 
                 _tabla_det = grp_det_f[['categoria','medio','unidades','Monto','%']].rename(
                     columns={'categoria':'Categoría','medio':'Medio','unidades':'Un.','%':'Part.'})
-                _fila_total = pd.DataFrame([{
-                    'Categoría':'TOTAL', 'Medio':'', 'Un.':_unid_f,
-                    'Monto':fmt_ar(_total_f), 'Part.':'100%' if not (_f_cats or _f_meds) else ''
-                }])
-                st.dataframe(pd.concat([_tabla_det, _fila_total], ignore_index=True),
-                    use_container_width=True, hide_index=True)
+                st.dataframe(_tabla_det, use_container_width=True, hide_index=True)
+
+                # Total como barra gris fuera de la tabla blanca
+                st.markdown(f"""
+                <div style="background:#ECF0F1; border-radius:10px; padding:10px 18px;
+                            margin:6px 0 4px 0; display:flex; justify-content:space-between;
+                            align-items:center; border:1px solid #D5DBDB;">
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if (_f_cats or _f_meds) else ''}</span>
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.95rem;">
+                        {_unid_f} un. &nbsp;·&nbsp; {fmt_ar(_total_f)}
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
                 fig_bar = px.bar(grp.sort_values('monto'), x='monto', y='categoria', orientation='h',
                     color='monto', color_continuous_scale=[[0,color_seq[0]],[1,color_seq[min(3,len(color_seq)-1)]]],
                     text=grp.sort_values('monto')['monto'].apply(fmt_ar),
@@ -1315,14 +1325,16 @@ else:
                 st.plotly_chart(fig_fv,use_container_width=True,key="fv_bar")
             with cfv2:
                 df_fv_d = df_gas_nat.groupby(['naturaleza','categoria'])['monto'].sum().reset_index()
-                st.markdown("#### 📋 Detalle Fijo / Variable")
 
-                # Filtros por columna
-                ffv1, ffv2 = st.columns(2)
+                _hfv1, _hfv2 = st.columns([5,1])
+                with _hfv1:
+                    st.markdown("#### 📋 Detalle Fijo / Variable")
                 _nat_disp = sorted(df_fv_d['naturaleza'].dropna().unique().tolist())
                 _cat_disp = sorted(df_fv_d['categoria'].dropna().unique().tolist())
-                _f_nat = ffv1.multiselect("Filtrar naturaleza:", _nat_disp, key="filt_nat_fv")
-                _f_cat = ffv2.multiselect("Filtrar categoría:", _cat_disp, key="filt_cat_fv")
+                with _hfv2:
+                    with st.popover("🔍 Filtros", use_container_width=True):
+                        _f_nat = st.multiselect("Filtrar naturaleza:", _nat_disp, key="filt_nat_fv")
+                        _f_cat = st.multiselect("Filtrar categoría:", _cat_disp, key="filt_cat_fv")
 
                 df_fv_f = df_fv_d.copy()
                 if _f_nat: df_fv_f = df_fv_f[df_fv_f['naturaleza'].isin(_f_nat)]
@@ -1335,13 +1347,17 @@ else:
 
                 _tabla_fv = df_fv_f[['naturaleza','categoria','Monto','%']].rename(
                     columns={'naturaleza':'Naturaleza','categoria':'Categoría','%':'Part.'})
-                # Fila de totales fija al final (la tabla es larga -> mantenemos el header sticky con height fijo)
-                _fila_total_fv = pd.DataFrame([{
-                    'Naturaleza':'TOTAL','Categoría':'', 'Monto':fmt_ar(_total_fv),
-                    'Part.':'100%' if not (_f_nat or _f_cat) else ''
-                }])
-                st.dataframe(pd.concat([_tabla_fv, _fila_total_fv], ignore_index=True),
-                    use_container_width=True, hide_index=True, height=360)
+                st.dataframe(_tabla_fv, use_container_width=True, hide_index=True, height=320)
+
+                # Total como barra gris fuera de la tabla blanca
+                st.markdown(f"""
+                <div style="background:#ECF0F1; border-radius:10px; padding:10px 18px;
+                            margin:6px 0 4px 0; display:flex; justify-content:space-between;
+                            align-items:center; border:1px solid #D5DBDB;">
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if (_f_nat or _f_cat) else ''}</span>
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.95rem;">{fmt_ar(_total_fv)}</span>
+                </div>
+                """, unsafe_allow_html=True)
 
         # GRÁFICO COMBINADO MENSUAL — solo admin
         if es_admin:
