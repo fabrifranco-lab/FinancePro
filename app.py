@@ -12,6 +12,7 @@ import urllib.parse
 import io
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
@@ -33,6 +34,29 @@ def fmt_ar_m(valor):
         return base
     except:
         return "$ 0"
+
+def tabla_con_filtro_encabezado(df_display, columnas_ocultas=None, height=300, key=None):
+    """Muestra un DataFrame con un ícono de filtro integrado en cada encabezado de columna
+    (igual que un autofiltro de Excel/Sheets: clic en la flechita -> se abre el desplegable
+    de opciones para esa columna). Devuelve el DataFrame ya filtrado por el usuario."""
+    columnas_ocultas = columnas_ocultas or []
+    gb = GridOptionsBuilder.from_dataframe(df_display)
+    gb.configure_default_column(filter=True, sortable=True, resizable=True, suppressMenu=False)
+    for c in columnas_ocultas:
+        gb.configure_column(c, hide=True)
+    grid_options = gb.build()
+    resp = AgGrid(
+        df_display,
+        gridOptions=grid_options,
+        height=height,
+        theme="balham",
+        update_mode=GridUpdateMode.MODEL_CHANGED,
+        data_return_mode=DataReturnMode.FILTERED,
+        fit_columns_on_grid_load=True,
+        allow_unsafe_jscode=False,
+        key=key,
+    )
+    return resp["data"] if resp is not None else df_display
 
 COLORS = {
     "primary":   "#1B4F8A",
@@ -1245,39 +1269,32 @@ else:
             with st.expander(f"📋 Detalle — {titulo}"):
                 grp_det = df_tipo.groupby(['categoria','medio']).agg(
                     monto=('monto','sum'), unidades=('monto','count')
-                ).reset_index()
+                ).reset_index().sort_values('monto', ascending=False)
+                grp_det['%'] = (grp_det['monto']/total*100).round(1).astype(str)+'%' if total else '0%'
+                grp_det['Monto'] = grp_det['monto'].apply(fmt_ar)
 
-                # Filtros por categoría y medio de pago (ocultos en un popover junto al título)
-                _cats_disp  = sorted(grp_det['categoria'].dropna().unique().tolist())
-                _meds_disp  = sorted(grp_det['medio'].dropna().unique().tolist())
-                _hcol1, _hcol2 = st.columns([5,1])
-                with _hcol2:
-                    with st.popover("🔍 Filtros", use_container_width=True):
-                        _f_cats = st.multiselect("Filtrar categoría:", _cats_disp, key=f"filt_cat_{key_sfx}")
-                        _f_meds = st.multiselect("Filtrar medio de pago:", _meds_disp, key=f"filt_med_{key_sfx}")
-
-                grp_det_f = grp_det.copy()
-                if _f_cats: grp_det_f = grp_det_f[grp_det_f['categoria'].isin(_f_cats)]
-                if _f_meds: grp_det_f = grp_det_f[grp_det_f['medio'].isin(_f_meds)]
-
-                _total_f = grp_det_f['monto'].sum()
-                _unid_f  = grp_det_f['unidades'].sum()
-                grp_det_f = grp_det_f.sort_values('monto', ascending=False).copy()
-                grp_det_f['%'] = (grp_det_f['monto']/total*100).round(1).astype(str)+'%' if total else '0%'
-                grp_det_f['Monto'] = grp_det_f['monto'].apply(fmt_ar)
-
-                _tabla_det = grp_det_f[['categoria','medio','unidades','Monto','%']].rename(
+                _tabla_det = grp_det[['categoria','medio','unidades','Monto','%','monto']].rename(
                     columns={'categoria':'Categoría','medio':'Medio','unidades':'Un.','%':'Part.'})
-                st.dataframe(_tabla_det, use_container_width=True, hide_index=True)
+
+                # Cada encabezado de columna trae su propia flechita de filtro (como en una planilla)
+                _df_filtrado = tabla_con_filtro_encabezado(
+                    _tabla_det, columnas_ocultas=['monto'], height=280, key=f"grid_{key_sfx}")
+
+                if _df_filtrado is not None and not _df_filtrado.empty:
+                    _total_f = pd.to_numeric(_df_filtrado['monto'], errors='coerce').fillna(0).sum()
+                    _unid_f  = pd.to_numeric(_df_filtrado['Un.'], errors='coerce').fillna(0).sum()
+                    _filtrado_activo = len(_df_filtrado) < len(_tabla_det)
+                else:
+                    _total_f, _unid_f, _filtrado_activo = 0, 0, True
 
                 # Total como barra gris fuera de la tabla blanca
                 st.markdown(f"""
                 <div style="background:#ECF0F1; border-radius:10px; padding:10px 18px;
                             margin:6px 0 4px 0; display:flex; justify-content:space-between;
                             align-items:center; border:1px solid #D5DBDB;">
-                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if (_f_cats or _f_meds) else ''}</span>
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if _filtrado_activo else ''}</span>
                     <span style="font-weight:700; color:{COLORS['text']}; font-size:0.95rem;">
-                        {_unid_f} un. &nbsp;·&nbsp; {fmt_ar(_total_f)}
+                        {int(_unid_f)} un. &nbsp;·&nbsp; {fmt_ar(_total_f)}
                     </span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -1325,36 +1342,31 @@ else:
                 st.plotly_chart(fig_fv,use_container_width=True,key="fv_bar")
             with cfv2:
                 df_fv_d = df_gas_nat.groupby(['naturaleza','categoria'])['monto'].sum().reset_index()
+                df_fv_d = df_fv_d.sort_values(['naturaleza','monto'],ascending=[True,False])
+                df_fv_d['%'] = (df_fv_d['monto']/df_gas_nat['monto'].sum()*100).round(1).astype(str)+'%' if df_gas_nat['monto'].sum() else '0%'
+                df_fv_d['Monto'] = df_fv_d['monto'].apply(fmt_ar)
 
-                _hfv1, _hfv2 = st.columns([5,1])
-                with _hfv1:
-                    st.markdown("#### 📋 Detalle Fijo / Variable")
-                _nat_disp = sorted(df_fv_d['naturaleza'].dropna().unique().tolist())
-                _cat_disp = sorted(df_fv_d['categoria'].dropna().unique().tolist())
-                with _hfv2:
-                    with st.popover("🔍 Filtros", use_container_width=True):
-                        _f_nat = st.multiselect("Filtrar naturaleza:", _nat_disp, key="filt_nat_fv")
-                        _f_cat = st.multiselect("Filtrar categoría:", _cat_disp, key="filt_cat_fv")
+                st.markdown("#### 📋 Detalle Fijo / Variable")
 
-                df_fv_f = df_fv_d.copy()
-                if _f_nat: df_fv_f = df_fv_f[df_fv_f['naturaleza'].isin(_f_nat)]
-                if _f_cat: df_fv_f = df_fv_f[df_fv_f['categoria'].isin(_f_cat)]
-
-                _total_fv = df_fv_f['monto'].sum()
-                df_fv_f = df_fv_f.sort_values(['naturaleza','monto'],ascending=[True,False]).copy()
-                df_fv_f['%'] = (df_fv_f['monto']/df_gas_nat['monto'].sum()*100).round(1).astype(str)+'%' if df_gas_nat['monto'].sum() else '0%'
-                df_fv_f['Monto'] = df_fv_f['monto'].apply(fmt_ar)
-
-                _tabla_fv = df_fv_f[['naturaleza','categoria','Monto','%']].rename(
+                _tabla_fv = df_fv_d[['naturaleza','categoria','Monto','%','monto']].rename(
                     columns={'naturaleza':'Naturaleza','categoria':'Categoría','%':'Part.'})
-                st.dataframe(_tabla_fv, use_container_width=True, hide_index=True, height=320)
+
+                # Cada encabezado de columna trae su propia flechita de filtro
+                _df_fv_filtrado = tabla_con_filtro_encabezado(
+                    _tabla_fv, columnas_ocultas=['monto'], height=320, key="grid_fv")
+
+                if _df_fv_filtrado is not None and not _df_fv_filtrado.empty:
+                    _total_fv = pd.to_numeric(_df_fv_filtrado['monto'], errors='coerce').fillna(0).sum()
+                    _filtrado_activo_fv = len(_df_fv_filtrado) < len(_tabla_fv)
+                else:
+                    _total_fv, _filtrado_activo_fv = 0, True
 
                 # Total como barra gris fuera de la tabla blanca
                 st.markdown(f"""
                 <div style="background:#ECF0F1; border-radius:10px; padding:10px 18px;
                             margin:6px 0 4px 0; display:flex; justify-content:space-between;
                             align-items:center; border:1px solid #D5DBDB;">
-                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if (_f_nat or _f_cat) else ''}</span>
+                    <span style="font-weight:700; color:{COLORS['text']}; font-size:0.85rem;">TOTAL{' (filtrado)' if _filtrado_activo_fv else ''}</span>
                     <span style="font-weight:700; color:{COLORS['text']}; font-size:0.95rem;">{fmt_ar(_total_fv)}</span>
                 </div>
                 """, unsafe_allow_html=True)
