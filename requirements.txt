@@ -11,4 +11,3 @@ python-dateutil==2.9.0
 pyarrow==14.0.2
 pillow==10.4.0
 fonttools==4.53.1
-streamlit-aggrid==1.2.1.post2
