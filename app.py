@@ -6,13 +6,12 @@ from google.oauth2.service_account import Credentials
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import time
 import urllib.parse
 import io
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 # ─────────────────────────────────────────────
 st.set_page_config(page_title="FinancePRO v12.2", layout="wide", page_icon="💼")
@@ -35,28 +34,28 @@ def fmt_ar_m(valor):
     except:
         return "$ 0"
 
-def tabla_con_filtro_encabezado(df_display, columnas_ocultas=None, height=300, key=None):
-    """Muestra un DataFrame con un ícono de filtro integrado en cada encabezado de columna
-    (igual que un autofiltro de Excel/Sheets: clic en la flechita -> se abre el desplegable
-    de opciones para esa columna). Devuelve el DataFrame ya filtrado por el usuario."""
-    columnas_ocultas = columnas_ocultas or []
-    gb = GridOptionsBuilder.from_dataframe(df_display)
-    gb.configure_default_column(filter=True, sortable=True, resizable=True, suppressMenu=False)
-    for c in columnas_ocultas:
-        gb.configure_column(c, hide=True)
-    grid_options = gb.build()
-    resp = AgGrid(
-        df_display,
-        gridOptions=grid_options,
-        height=height,
-        theme="balham",
-        update_mode=GridUpdateMode.MODEL_CHANGED,
-        data_return_mode=DataReturnMode.FILTERED,
-        fit_columns_on_grid_load=True,
-        allow_unsafe_jscode=False,
-        key=key,
-    )
-    return resp["data"] if resp is not None else df_display
+def filtro_rapido_columnas(df_base, columnas_filtrables, key_prefix):
+    """Fila de encabezado con un botón '🔽' al lado de cada columna filtrable.
+    Al hacer clic se abren TODAS las opciones de esa columna para tildar
+    (como el autofiltro básico de Excel/Sheets), en español. Devuelve el
+    DataFrame filtrado y un booleano indicando si hay algún filtro activo."""
+    df_filtrado = df_base.copy()
+    filtros_activos = False
+    cols_header = st.columns(len(columnas_filtrables))
+    for i, colname in enumerate(columnas_filtrables):
+        with cols_header[i]:
+            _sub_lbl, _sub_btn = st.columns([3,1])
+            _sub_lbl.markdown(f"**{colname}**")
+            _opciones = sorted(df_base[colname].dropna().unique().tolist())
+            with _sub_btn:
+                with st.popover("🔽", use_container_width=True, help=f"Filtrar {colname}"):
+                    _sel = st.multiselect(
+                        f"Tildá las opciones de {colname} que querés ver:",
+                        _opciones, key=f"{key_prefix}_filt_{colname}")
+            if _sel:
+                df_filtrado = df_filtrado[df_filtrado[colname].isin(_sel)]
+                filtros_activos = True
+    return df_filtrado, filtros_activos
 
 COLORS = {
     "primary":   "#1B4F8A",
@@ -116,7 +115,13 @@ section[data-testid="stSidebar"] div[data-baseweb="input"] {{
 }}
 /* Texto dentro de selectbox sidebar */
 section[data-testid="stSidebar"] div[data-baseweb="select"] span {{ color: #FFFFFF !important; font-weight:600 !important; }}
-section[data-testid="stSidebar"] input {{ color: #FFFFFF !important; font-weight:600 !important; }}
+section[data-testid="stSidebar"] input {{
+    color: #FFFFFF !important;
+    font-weight:600 !important;
+    background-color: transparent !important;
+    -webkit-text-fill-color: #FFFFFF !important;
+}}
+section[data-testid="stSidebar"] div[data-baseweb="input"] > div {{ background-color: transparent !important; }}
 
 div[data-baseweb="popover"] {{ z-index:99999 !important; position:fixed !important; }}
 div[data-baseweb="calendar"] {{
@@ -164,6 +169,24 @@ input, select, textarea {{ color:{COLORS['text']} !important; }}
 .stTabs [data-baseweb="tab-list"] {{ gap:4px !important; background-color:#D5DBDB !important; border-radius:10px !important; padding:4px !important; }}
 .stTabs [data-baseweb="tab"] {{ border-radius:8px !important; font-weight:600 !important; color:#7F8C8D !important; padding:8px 16px !important; }}
 .stTabs [aria-selected="true"] {{ background-color:{COLORS['primary']} !important; color:white !important; }}
+
+/* "Pestañas" de Movimientos (implementadas con st.radio para que no se
+   reinicien a la primera al hacer un rerun, algo que st.tabs no permite) */
+div[data-testid="stRadio"][aria-label="Sección:"] {{
+    background-color:#D5DBDB; border-radius:10px; padding:4px; display:inline-block;
+}}
+div[data-testid="stRadio"][aria-label="Sección:"] > div {{ gap:4px !important; flex-wrap:wrap; }}
+div[data-testid="stRadio"][aria-label="Sección:"] label {{
+    background-color:transparent; border-radius:8px !important; padding:6px 14px !important;
+    font-weight:600 !important; color:{COLORS['text']} !important; margin:0 !important;
+    transition: background-color 0.15s !important;
+}}
+div[data-testid="stRadio"][aria-label="Sección:"] label:has(input:checked) {{
+    background-color:{COLORS['primary']} !important;
+}}
+div[data-testid="stRadio"][aria-label="Sección:"] label:has(input:checked) p {{ color:white !important; }}
+div[data-testid="stRadio"][aria-label="Sección:"] input {{ display:none !important; }}
+div[data-testid="stRadio"][aria-label="Sección:"] svg {{ display:none !important; }}
 
 .stButton button {{
     background:linear-gradient(135deg, {COLORS['primary']}, #2980B9) !important;
@@ -359,6 +382,11 @@ def read_ws(sh, name):
     df  = df.dropna(how='all').reset_index(drop=True)
     df  = df.loc[:, df.columns.notna()]
     df  = df.loc[:, ~df.columns.astype(str).str.startswith('Unnamed')]
+    # FIX "None" fantasma: gspread_dataframe rellena celdas vacías/faltantes con
+    # el objeto None de Python. Al forzar dtype=str, ese None se convierte en el
+    # texto literal "None" (o "nan") y queda guardado así en cualquier columna.
+    # Lo limpiamos acá, en el único lugar por donde pasan todos los datos.
+    df = df.replace(to_replace=['None', 'NONE', 'nan', 'NaN', 'NAN', '<NA>'], value='')
     return df
 
 @st.cache_data(ttl=120, show_spinner="Cargando datos...")
@@ -502,10 +530,13 @@ else:
                 _y -= 1
             return date(_y, _m, 1)
 
-        _OPCIONES_PERIODO = ["Personalizado","Este mes","Últimos 3 meses","Últimos 6 meses","Este año"]
+        _OPCIONES_PERIODO = ["Personalizado","Este mes","Mes pasado","Últimos 3 meses","Últimos 6 meses","Este año"]
 
         def _rango_por_opcion(op):
             if op == "Este mes":          return [_hoy.replace(day=1), _hoy]
+            if op == "Mes pasado":
+                _fin_mes_pasado = _hoy.replace(day=1) - timedelta(days=1)
+                return [_fin_mes_pasado.replace(day=1), _fin_mes_pasado]
             if op == "Últimos 3 meses":    return [_restar_meses(_hoy, 3), _hoy]
             if op == "Últimos 6 meses":    return [_restar_meses(_hoy, 6), _hoy]
             if op == "Este año":           return [date(_hoy.year, 1, 1), _hoy]
@@ -608,13 +639,26 @@ else:
     else:
         df_f = df_c.copy()
 
+    # Filtrar categorías del Config para este cliente (si hay columna 'email')
+    # IMPORTANTE: esto tiene que calcularse ANTES de armar la lista de "medios",
+    # si no cada cliente termina viendo los medios de pago de TODOS los clientes
+    # mezclados (bug detectado: se usaba antes de estar definido).
+    if 'email' in df_config.columns:
+        df_config_cliente = df_config[
+            df_config['email'].astype(str).str.lower().str.strip() == cliente_mail
+        ].copy()
+        # Si no hay filas para este cliente, usar todas (compatibilidad hacia atrás)
+        if df_config_cliente.empty:
+            df_config_cliente = df_config.copy()
+    else:
+        df_config_cliente = df_config.copy()
+
     # Medios de pago: columna D del Config, ignorar vacíos y guiones
     medios_col = 'medios' if 'medios' in df_config.columns else None
     if medios_col:
         # Normalizar: Title Case + deduplicar case-insensitive
-        # Solo los medios que realmente tiene habilitados este cliente en Config
-        _cfg_cli = df_config_cliente if 'df_config_cliente' in locals() else df_config
-        _raw_medios = [str(m).strip().title() for m in _cfg_cli[medios_col].dropna().unique().tolist()
+        # Solo los medios que realmente tiene habilitados ESTE cliente en Config
+        _raw_medios = [str(m).strip().title() for m in df_config_cliente[medios_col].dropna().unique().tolist()
                        if str(m).strip() not in ('', 'nan', '-')]
         _seen = set()
         medios = []
@@ -627,16 +671,9 @@ else:
     else:
         medios = ["Efectivo", "Transferencia", "A cuenta"]
 
-    # Filtrar categorías del Config para este cliente (si hay columna 'email')
-    if 'email' in df_config.columns:
-        df_config_cliente = df_config[
-            df_config['email'].astype(str).str.lower().str.strip() == cliente_mail
-        ].copy()
-        # Si no hay filas para este cliente, usar todas (compatibilidad hacia atrás)
-        if df_config_cliente.empty:
-            df_config_cliente = df_config.copy()
-    else:
-        df_config_cliente = df_config.copy()
+    # ¿Este cliente usa cheques? (según columna "medios" de Config) — controla la
+    # visibilidad de TODO lo relacionado a cheques en la app (punto 5)
+    cliente_tiene_cheques = any(m.lower() in ('cheque','e-cheq','echeq') for m in medios)
 
     # -- HELPER: generar PDF --
     def _safe(txt):
@@ -1007,13 +1044,15 @@ else:
         m5.metric("📈 UTILIDAD",    fmt_ar_m(util), delta=f"{util/ing*100:.1f}% margen" if ing else "")
 
         # Métricas fila 2
-        m6,m7,m8,_ = st.columns(4)
+        m6,m7,m8,m9 = st.columns(4)
         m6.metric("🏦 CAJA REAL",  fmt_ar_m(caja),
                    delta=f"-{fmt_ar(pend_t)} pend." if pend_t else "",
                    help="Ingresos cobrados menos gastos efectivizados y pendientes de cobro")
         m7.metric("⏳ PENDIENTES", fmt_ar_m(pend_t), delta="",
                    help="Cobros pendientes de tus clientes")
         m8.metric("📦 INVERTIDO",  fmt_ar_m(inv_total), delta="")
+        m9.metric("🧾 A PAGAR (cuotas)", fmt_ar_m(gas_comprometido), delta="",
+                   help="Compras/gastos en cuotas o diferidos que todavía no pagaste. El detalle con fechas de vencimiento está más abajo.")
         if gas_comprometido > 0:
             st.markdown(
                 f"<div style='background:#FFF3CD; border-left:4px solid #F39C12; "
@@ -1110,9 +1149,8 @@ else:
                 c = str(pv.get('cuotas',''))
                 return f"Cuota {pv.get('cuota_num','')}/{c}" if c not in ('','nan') else 'Pago diferido'
 
-            # cliente_tiene_cheques para el scope del dashboard
-            _medios_lower_dash = [m.lower() for m in medios]
-            _cliente_ch_dash   = any(x in _medios_lower_dash for x in ('cheque','e-cheq','echeq'))
+            # Reutilizamos la variable global cliente_tiene_cheques (calculada más arriba)
+            _cliente_ch_dash = cliente_tiene_cheques
 
             def _btn_registrar_pago(pv, key_sfx):
                 """Formulario inline para registrar pago — SIN expander (evita anidamiento)."""
@@ -1276,16 +1314,17 @@ else:
                 _tabla_det = grp_det[['categoria','medio','unidades','Monto','%','monto']].rename(
                     columns={'categoria':'Categoría','medio':'Medio','unidades':'Un.','%':'Part.'})
 
-                # Cada encabezado de columna trae su propia flechita de filtro (como en una planilla)
-                _df_filtrado = tabla_con_filtro_encabezado(
-                    _tabla_det, columnas_ocultas=['monto'], height=280, key=f"grid_{key_sfx}")
+                # Filtro rápido en español: clic en 🔽 al lado de Categoría/Medio -> tildar opciones
+                _df_filtrado, _filtrado_activo = filtro_rapido_columnas(
+                    _tabla_det, ['Categoría','Medio'], key_prefix=f"det_{key_sfx}")
 
-                if _df_filtrado is not None and not _df_filtrado.empty:
+                st.dataframe(_df_filtrado.drop(columns=['monto']), use_container_width=True, hide_index=True)
+
+                if not _df_filtrado.empty:
                     _total_f = pd.to_numeric(_df_filtrado['monto'], errors='coerce').fillna(0).sum()
                     _unid_f  = pd.to_numeric(_df_filtrado['Un.'], errors='coerce').fillna(0).sum()
-                    _filtrado_activo = len(_df_filtrado) < len(_tabla_det)
                 else:
-                    _total_f, _unid_f, _filtrado_activo = 0, 0, True
+                    _total_f, _unid_f = 0, 0
 
                 # Total como barra gris fuera de la tabla blanca
                 st.markdown(f"""
@@ -1351,15 +1390,17 @@ else:
                 _tabla_fv = df_fv_d[['naturaleza','categoria','Monto','%','monto']].rename(
                     columns={'naturaleza':'Naturaleza','categoria':'Categoría','%':'Part.'})
 
-                # Cada encabezado de columna trae su propia flechita de filtro
-                _df_fv_filtrado = tabla_con_filtro_encabezado(
-                    _tabla_fv, columnas_ocultas=['monto'], height=320, key="grid_fv")
+                # Filtro rápido en español: clic en 🔽 al lado de Naturaleza/Categoría -> tildar opciones
+                _df_fv_filtrado, _filtrado_activo_fv = filtro_rapido_columnas(
+                    _tabla_fv, ['Naturaleza','Categoría'], key_prefix="fv")
 
-                if _df_fv_filtrado is not None and not _df_fv_filtrado.empty:
+                st.dataframe(_df_fv_filtrado.drop(columns=['monto']),
+                    use_container_width=True, hide_index=True, height=320)
+
+                if not _df_fv_filtrado.empty:
                     _total_fv = pd.to_numeric(_df_fv_filtrado['monto'], errors='coerce').fillna(0).sum()
-                    _filtrado_activo_fv = len(_df_fv_filtrado) < len(_tabla_fv)
                 else:
-                    _total_fv, _filtrado_activo_fv = 0, True
+                    _total_fv = 0
 
                 # Total como barra gris fuera de la tabla blanca
                 st.markdown(f"""
@@ -1502,12 +1543,18 @@ else:
         # dias_alerta definida globalmente para el módulo de cheques
         dias_alerta = st.session_state.get('dias_alerta_val', 15)
 
-        t1,t2,t3,t4 = st.tabs(["➕ Nuevo Registro","📋 Historial y Edición","💰 Gestión de Cobros","🏦 Cheques"])
+        _tabs_labels = ["➕ Nuevo Registro","📋 Historial y Edición","💰 Gestión de Cobros"]
+        if cliente_tiene_cheques:
+            _tabs_labels.append("🏦 Cheques")
 
-        with t1:
-            medios_lower = [m.lower() for m in medios]
-            cliente_tiene_cheques = any(x in medios_lower for x in ('cheque','e-cheq','echeq'))
+        if st.session_state.get('mov_tab_sel') not in _tabs_labels:
+            st.session_state['mov_tab_sel'] = _tabs_labels[0]
 
+        st.radio("Sección:", _tabs_labels, horizontal=True, key="mov_tab_sel", label_visibility="collapsed")
+        st.markdown("<div style='margin-bottom:6px;'></div>", unsafe_allow_html=True)
+        _tab_sel = st.session_state["mov_tab_sel"]
+
+        if _tab_sel == "➕ Nuevo Registro":
             # ── PASO 1: Tipo ──────────────────────────────────────────
             tp_v = st.radio("Tipo de movimiento:", ["Gasto","Ingreso"], horizontal=True, key="tp_carga")
             cats = (df_config_cliente[df_config_cliente['tipo_asociado']==tp_v]['categoria']
@@ -1836,7 +1883,7 @@ else:
                         st.session_state.pop('data_cache', None)
                         st.success("✅ Registro guardado correctamente")
                         st.rerun()
-        with t2:
+        elif _tab_sel == "📋 Historial y Edición":
             # ── Filtros de historial ──
             fh1, fh2, fh3 = st.columns(3)
             tipos_disp  = ["Todos"] + sorted(df_f['tipo'].dropna().unique().tolist())
@@ -1873,7 +1920,12 @@ else:
                     et  = ce2.selectbox("Tipo",["Ingreso","Gasto"],index=0 if curr['tipo']=="Ingreso" else 1)
                     cats_e = df_config_cliente[df_config_cliente['tipo_asociado']==et]['categoria'].dropna().unique().tolist() if 'tipo_asociado' in df_config_cliente.columns else []
                     ec  = ce3.selectbox("Categoría",cats_e)
-                    em  = st.number_input("💵 Monto",value=float(curr['monto']))
+                    ce4,ce5 = st.columns(2)
+                    em  = ce4.number_input("💵 Monto",value=float(curr['monto']))
+                    _medio_actual = str(curr.get('medio','')) if 'medio' in curr.index else ''
+                    emed = ce5.selectbox("💳 Medio de pago", medios,
+                        index=medios.index(_medio_actual) if _medio_actual in medios else 0,
+                        help="Corregí acá si el movimiento se cargó con el medio de pago equivocado")
                     en  = st.text_input("📝 Nota",value=curr['nota'])
                     ep  = st.number_input("⏳ Pendiente",value=float(curr['pendiente']))
                     # Campo WhatsApp editable
@@ -1882,8 +1934,8 @@ else:
                                         help="Solo digitos: 549XXXXXXXXXX")
                     bu,bd = st.columns(2)
                     if bu.form_submit_button("💾 ACTUALIZAR",use_container_width=True):
-                        upd_cols = ['fecha','tipo','categoria','monto','pendiente','nota','whatsapp_contacto']
-                        upd_vals = [ef.strftime('%d/%m/%Y'),et,ec,em,ep,en,ewa]
+                        upd_cols = ['fecha','tipo','categoria','monto','medio','pendiente','nota','whatsapp_contacto']
+                        upd_vals = [ef.strftime('%d/%m/%Y'),et,ec,em,emed,ep,en,ewa]
                         for col,val in zip(upd_cols, upd_vals):
                             if col in df_movs_raw.columns:
                                 df_movs_raw.loc[df_movs_raw['id']==id_t, col] = val
@@ -1894,7 +1946,7 @@ else:
                         write_ws("Movimientos", df_movs_raw)
                         st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
-        with t3:
+        elif _tab_sel == "💰 Gestión de Cobros":
             deudas_v = df_c[df_c['pendiente']>0]
             if deudas_v.empty:
                 st.success("✅ Sin cobros pendientes.")
@@ -1914,8 +1966,8 @@ else:
                             write_ws("Movimientos", pd.concat([df_movs_raw,pago],ignore_index=True))
                             st.cache_data.clear(); st.session_state.pop('data_cache', None); st.rerun()
 
-        # ═════════════════ TAB CHEQUES ═════════════════
-        with t4:
+        # ═════════════════ TAB CHEQUES (solo si el cliente usa cheques) ═════════════════
+        elif _tab_sel == "🏦 Cheques" and cliente_tiene_cheques:
             st.markdown("#### 🏦 Banco de Cheques")
             st.info("Los cheques se registran automáticamente al cargar un movimiento con medio **Cheque** o **E-Cheq**.")
 
